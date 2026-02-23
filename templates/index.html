@@ -1,0 +1,287 @@
+﻿<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sistema de Laudos por IA - GUENKA</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div class="brand">
+          <div class="logo">LR</div>
+          <div>
+            <p class="eyebrow">Radiologia</p>
+            <h1>Sistema de Laudos por IA - GUENKA</h1>
+            <p class="subtitle">Ditado por voz em pt-BR + modelos rápidos</p>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="status-row">
+            <span class="label">Reconhecimento de voz</span>
+            <span id="speechSupport" class="badge">Detectando...</span>
+          </div>
+          <div class="status-row">
+            <span class="label">Microfone</span>
+            <span id="micStatus" class="badge idle">Inativo</span>
+          </div>
+          <div class="status-row">
+            <span class="label">Tema</span>
+            <button id="themeToggle" class="toggle-btn" type="button" aria-pressed="false">
+              <span class="toggle-text">Claro</span>
+            </button>
+          </div>
+          <p id="speechHint" class="hint">Permita o microfone no navegador para ditar.</p>
+        </div>
+      </header>
+
+      <section class="toolbar card">
+        <div class="toolbar-left">
+          <div class="field">
+            <label>Modalidade</label>
+            <div class="mode-switch">
+              <button class="mode-btn active" data-mode="ct">Tomografia</button>
+              <button class="mode-btn" data-mode="mri">Ressonancia</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="regionSelect">Região</label>
+            <select id="regionSelect">
+              <option value="cranio">Crânio</option>
+              <option value="pescoco">Pescoço</option>
+              <option value="torax">Tórax</option>
+              <option value="abdomen">Abdome</option>
+              <option value="abdome_pelve">Abdome e pelve</option>
+              <option value="coluna">Coluna</option>
+              <option value="pelve">Pelve</option>
+              <option value="osteo">Ósteoarticular</option>
+              <option value="vascular">Vascular</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="contrastSelect">Contraste</label>
+            <select id="contrastSelect">
+              <option value="sem">Sem contraste</option>
+              <option value="com">Com contraste</option>
+              <option value="misto">Sem e com contraste</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="specificTemplateSelect">Modelo específico</label>
+            <select id="specificTemplateSelect">
+              <option value="">Modelo padrão da região</option>
+            </select>
+          </div>
+        </div>
+        <div class="toolbar-actions">
+          <button id="applyTemplate" class="btn primary">Aplicar modelo</button>
+          <button id="addTemplate" class="btn ghost" type="button" title="Carregar template de laudo">Adicionar template</button>
+          <input id="templateFileInput" type="file" accept=".txt,.doc,.docx,.pdf,.json,application/json" hidden />
+          <button id="generateReport" class="btn">Gerar laudo</button>
+          <button id="clearForm" class="btn ghost">Limpar</button>
+        </div>
+        <p id="templateStatus" class="toolbar-hint">Nenhum template personalizado carregado.</p>
+      </section>
+
+      <section class="card ai-panel card-animate">
+        <div class="ai-header">
+          <div>
+            <h2>Assistente de IA</h2>
+            <p class="subtitle">Geração automática de laudos a partir das frases ditadas.</p>
+          </div>
+          <div class="ai-actions">
+            <button id="generateAi" class="btn primary" type="button">Gerar com IA</button>
+            <span id="aiStatus" class="badge idle">Aguardando</span>
+          </div>
+        </div>
+        <div class="ai-controls">
+          <div class="field">
+            <label for="aiProvider">Provedor</label>
+            <select id="aiProvider">
+              <option value="lmstudio">LM Studio (local)</option>
+              <option value="openai">API externa (OpenAI compatível)</option>
+              <option value="gemini">API externa (Gemini)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="aiModel">Modelo</label>
+            <div class="model-select">
+              <select id="aiModel"></select>
+              <button id="refreshModels" class="btn ghost btn-small" type="button">Atualizar</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="aiApiKey">API Key</label>
+            <input id="aiApiKey" type="password" placeholder="Obrigatório para API externa" />
+          </div>
+          <div class="field">
+            <label for="aiBaseUrl">Base URL</label>
+            <input id="aiBaseUrl" type="text" placeholder="http://localhost:1234/v1" />
+          </div>
+        </div>
+        <p class="toolbar-hint">
+          Dica: no LM Studio, use o endpoint OpenAI compatível. Para API externa, informe a URL e a key.
+        </p>
+      </section>
+
+      <section class="grid">
+        <div class="card patient card-animate">
+          <h2>Dados do paciente</h2>
+          <div class="form-grid">
+            <div class="field">
+              <label for="patientName">Nome</label>
+              <input id="patientName" type="text" placeholder="Ex: Maria Silva" />
+            </div>
+            <div class="field">
+              <label for="patientId">ID</label>
+              <input id="patientId" type="text" placeholder="Ex: 000123" />
+            </div>
+            <div class="field">
+              <label for="patientAge">Idade</label>
+              <input id="patientAge" type="text" placeholder="Ex: 45" />
+            </div>
+            <div class="field">
+              <label for="patientSex">Sexo</label>
+              <select id="patientSex">
+                <option value="">Selecione</option>
+                <option value="F">F</option>
+                <option value="M">M</option>
+                <option value="Outro">Outro</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="studyDate">Data do exame</label>
+              <input id="studyDate" type="date" />
+            </div>
+            <div class="field">
+              <label for="referrer">Solicitante</label>
+              <input id="referrer" type="text" placeholder="Ex: Dr(a)." />
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header">
+              <h3>Indicação clínica</h3>
+              <button class="mic-btn" data-target="indication" data-label="Indicação clínica">Ditado</button>
+            </div>
+            <textarea id="indication" rows="3" placeholder="Motivo do exame."></textarea>
+          </div>
+          <div class="section">
+            <div class="section-header">
+              <h3>Informações adicionais</h3>
+              <button class="mic-btn" data-target="extraInfo" data-label="Informações adicionais">Ditado</button>
+            </div>
+            <textarea id="extraInfo" rows="3" placeholder="Histórico, cirurgias, comparativos."></textarea>
+          </div>
+        </div>
+
+        <div class="card report card-animate">
+          <h2>Corpo do laudo</h2>
+          <div class="section">
+            <div class="section-header">
+              <h3>Técnica</h3>
+              <button class="mic-btn" data-target="technique" data-label="Técnica">Ditado</button>
+            </div>
+            <textarea id="technique" rows="6"></textarea>
+          </div>
+          <div class="section">
+            <div class="section-header">
+              <h3>Achados</h3>
+              <button class="mic-btn" data-target="findings" data-label="Achados">Ditado</button>
+            </div>
+            <textarea id="findings" rows="12"></textarea>
+          </div>
+          <div class="section">
+            <div class="section-header">
+              <h3>Impressão</h3>
+              <button class="mic-btn" data-target="impression" data-label="Impressão">Ditado</button>
+            </div>
+            <textarea id="impression" rows="6"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <section class="card preview card-animate">
+        <div class="preview-header">
+          <div>
+            <h2>Pré-visualização e exportação</h2>
+            <p class="subtitle">Clique em Gerar laudo para montar o texto final.</p>
+          </div>
+          <div class="preview-actions">
+            <button id="copyReport" class="btn">Copiar</button>
+            <button id="downloadReport" class="btn">Baixar .txt</button>
+            <button id="saveDraft" class="btn ghost">Salvar rascunho</button>
+            <button id="loadDraft" class="btn ghost">Carregar</button>
+          </div>
+        </div>
+        <pre id="reportOutput" class="report-output">Seu laudo aparecerá aqui.</pre>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-card">
+        <div>
+          <h3>Dicas de ditado</h3>
+          <p>Fale pausadamente. Diga "ponto" e "vírgula" para pontuação. Clique em Ditado novamente para parar.</p>
+        </div>
+        <div class="footer-actions">
+          <button id="stopDictation" class="btn danger">Parar ditado</button>
+          <span id="dictationTarget" class="badge idle">Nenhum campo ativo</span>
+        </div>
+      </div>
+    </footer>
+
+    <div id="templateModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="templateModalTitle">
+      <div class="modal-backdrop" data-close-template-modal></div>
+      <section class="modal-content card">
+        <header class="modal-header">
+          <div>
+            <h2 id="templateModalTitle">Novo template de laudo</h2>
+            <p id="templateSourceLabel" class="subtitle">Revise e ajuste os dados antes de salvar.</p>
+          </div>
+          <button id="closeTemplateModal" type="button" class="btn ghost btn-small">Fechar</button>
+        </header>
+
+        <div class="modal-grid">
+          <div class="field">
+            <label for="templateModeSelect">Modalidade</label>
+            <select id="templateModeSelect">
+              <option value="ct">TC</option>
+              <option value="mri">RM</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="templateRegionSelect">Área anatômica</label>
+            <select id="templateRegionSelect">
+              <option value="cranio">Crânio</option>
+              <option value="pescoco">Pescoço</option>
+              <option value="torax">Tórax</option>
+              <option value="abdomen">Abdome</option>
+              <option value="abdome_pelve">Abdome e pelve</option>
+              <option value="coluna">Coluna</option>
+              <option value="pelve">Pelve</option>
+              <option value="osteo">Ósteoarticular</option>
+              <option value="vascular">Vascular</option>
+            </select>
+          </div>
+          <div class="field modal-title-field">
+            <label for="templateTitleInput">Título da chamada</label>
+            <input id="templateTitleInput" type="text" placeholder="Ex: TC Crânio sem contraste - trauma" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="templateContentInput">Texto do laudo (editável)</label>
+          <textarea id="templateContentInput" rows="14" placeholder="Conteúdo do laudo..."></textarea>
+        </div>
+
+        <footer class="modal-actions">
+          <button id="cancelTemplateModal" class="btn ghost" type="button">Cancelar</button>
+          <button id="saveTemplateModal" class="btn primary" type="button">Salvar template</button>
+        </footer>
+      </section>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
