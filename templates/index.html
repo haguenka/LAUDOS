@@ -113,7 +113,11 @@
           </div>
           <div class="field">
             <label for="aiApiKey">API Key</label>
-            <input id="aiApiKey" type="password" placeholder="Obrigatório para API externa" />
+            <div class="model-select">
+              <input id="aiApiKey" type="password" placeholder="Cole e salve globalmente no servidor" />
+              <button id="saveApiKey" class="btn ghost btn-small" type="button">Salvar global</button>
+            </div>
+            <p id="globalKeyStatus" class="toolbar-hint">Status da chave global: verifique no provedor selecionado.</p>
           </div>
           <div class="field">
             <label for="aiBaseUrl">Base URL</label>
