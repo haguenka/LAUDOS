@@ -132,6 +132,8 @@ const templateStatusEl = document.getElementById("templateStatus");
 const aiProviderEl = document.getElementById("aiProvider");
 const aiModelEl = document.getElementById("aiModel");
 const aiApiKeyEl = document.getElementById("aiApiKey");
+const saveApiKeyBtn = document.getElementById("saveApiKey");
+const globalKeyStatusEl = document.getElementById("globalKeyStatus");
 const aiBaseUrlEl = document.getElementById("aiBaseUrl");
 const generateAiBtn = document.getElementById("generateAi");
 const aiStatusEl = document.getElementById("aiStatus");
@@ -807,13 +809,91 @@ function setAiStatus(text, statusClass) {
   if (statusClass) aiStatusEl.classList.add(statusClass);
 }
 
+function isExternalProvider(provider) {
+  return provider === "openai" || provider === "gemini";
+}
+
+function updateGlobalKeyStatusLabel(status, provider) {
+  if (!globalKeyStatusEl) return;
+  const selectedProvider = provider || (aiProviderEl ? aiProviderEl.value : "");
+  if (!isExternalProvider(selectedProvider)) {
+    globalKeyStatusEl.textContent = "Status da chave global: não aplicável para LM Studio local.";
+    return;
+  }
+
+  const configured =
+    selectedProvider === "openai"
+      ? !!(status && status.openaiConfigured)
+      : !!(status && status.geminiConfigured);
+  globalKeyStatusEl.textContent = configured
+    ? "Status da chave global: configurada no servidor."
+    : "Status da chave global: não configurada para este provedor.";
+}
+
+async function fetchGlobalApiKeyStatus() {
+  if (!globalKeyStatusEl) return null;
+  try {
+    const response = await fetch("/api-keys/status", { method: "GET" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error((data && data.error) || "Falha ao consultar status da chave global.");
+    }
+    updateGlobalKeyStatusLabel(data);
+    return data;
+  } catch (err) {
+    globalKeyStatusEl.textContent = "Status da chave global: indisponível (erro de comunicação).";
+    return null;
+  }
+}
+
+async function saveGlobalApiKey() {
+  if (!aiProviderEl || !aiApiKeyEl) return;
+  const provider = aiProviderEl.value;
+  if (!isExternalProvider(provider)) {
+    window.alert("Chave global é necessária apenas para provedores externos (OpenAI/Gemini).");
+    return;
+  }
+
+  const apiKey = aiApiKeyEl.value.trim();
+  if (!apiKey) {
+    window.alert("Cole a API key antes de salvar globalmente.");
+    return;
+  }
+
+  if (saveApiKeyBtn) {
+    saveApiKeyBtn.disabled = true;
+    saveApiKeyBtn.textContent = "Salvando...";
+  }
+
+  try {
+    const response = await fetch("/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, apiKey }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error((data && data.error) || "Falha ao salvar API key global.");
+    }
+    aiApiKeyEl.value = "";
+    updateGlobalKeyStatusLabel(data.status || null, provider);
+    window.alert("API key salva globalmente no servidor.");
+  } catch (err) {
+    window.alert(err.message || "Erro ao salvar API key global.");
+  } finally {
+    if (saveApiKeyBtn) {
+      saveApiKeyBtn.disabled = false;
+      saveApiKeyBtn.textContent = "Salvar global";
+    }
+  }
+}
+
 function saveAiPrefs() {
   if (!aiProviderEl) return;
   const prefs = {
     provider: aiProviderEl.value,
     model: aiModelEl.value.trim(),
     baseUrl: aiBaseUrlEl.value.trim(),
-    apiKey: aiApiKeyEl ? aiApiKeyEl.value.trim() : "",
   };
   window.localStorage.setItem(aiPrefsKey, JSON.stringify(prefs));
 }
@@ -827,7 +907,6 @@ function loadAiPrefs() {
     if (prefs.provider) aiProviderEl.value = prefs.provider;
     if (prefs.model) ensureModelOption(prefs.model);
     if (prefs.baseUrl) aiBaseUrlEl.value = prefs.baseUrl;
-    if (aiApiKeyEl && prefs.apiKey) aiApiKeyEl.value = prefs.apiKey;
   } catch (err) {
     return;
   }
@@ -906,11 +985,6 @@ async function fetchModels() {
   const baseUrl = aiBaseUrlEl.value.trim();
   const apiKey = aiApiKeyEl.value.trim();
 
-  if ((provider === "openai" || provider === "gemini") && !apiKey) {
-    window.alert("Informe a API Key para listar modelos da API externa.");
-    return;
-  }
-
   modelFetchInFlight = true;
   refreshModelsBtn.disabled = true;
   const originalText = refreshModelsBtn.textContent;
@@ -988,10 +1062,6 @@ async function generateWithAi() {
 
   if (!model) {
     window.alert("Informe o modelo de IA.");
-    return;
-  }
-  if ((provider === "openai" || provider === "gemini") && !apiKey) {
-    window.alert("Informe a API Key para o provedor externo.");
     return;
   }
 
@@ -1550,6 +1620,7 @@ loadCustomTemplates().catch(() => {
 });
 loadAiPrefs();
 updateAiDefaults();
+fetchGlobalApiKeyStatus();
 if (refreshModelsBtn) {
   refreshModelsBtn.addEventListener("click", fetchModels);
 }
@@ -1562,6 +1633,7 @@ if (aiProviderEl) {
     updateAiDefaults();
     saveAiPrefs();
     autoFetchModelsIfNeeded();
+    fetchGlobalApiKeyStatus();
   });
 }
 
@@ -1573,6 +1645,6 @@ if (aiBaseUrlEl) {
   aiBaseUrlEl.addEventListener("change", saveAiPrefs);
 }
 
-if (aiApiKeyEl) {
-  aiApiKeyEl.addEventListener("change", saveAiPrefs);
+if (saveApiKeyBtn) {
+  saveApiKeyBtn.addEventListener("click", saveGlobalApiKey);
 }

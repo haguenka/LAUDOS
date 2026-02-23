@@ -386,6 +386,11 @@ h1 {
   min-width: 0;
 }
 
+.model-select input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .model-select .btn {
   flex-shrink: 0;
 }
