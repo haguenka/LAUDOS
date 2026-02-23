@@ -57,10 +57,12 @@ Use `.env.example` como base:
 
 - `PORT` (padrao: `5000`)
 - `FLASK_DEBUG` (padrao: `0`)
+- `TEMPLATE_DB_PATH` (padrao: `templates.db`)
 
 ## Observacoes
 
 - O reconhecimento de voz depende da Web Speech API do navegador (Chrome ou Edge).
 - Se nao houver suporte, o app segue funcionando com digitacao manual.
 - O rascunho fica salvo no `localStorage` do navegador.
+- Templates personalizados agora sao persistidos no servidor (SQLite), ficando acessiveis de qualquer computador apontando para o mesmo app.
 - Use o botao de tema para alternar claro/escuro; a preferencia fica salva.

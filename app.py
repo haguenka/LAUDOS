@@ -5,12 +5,17 @@ import os
 import re
 import requests
 import shutil
+import sqlite3
 import subprocess
 import tempfile
+import uuid
 import zipfile
+from datetime import datetime, timezone
 from xml.etree import ElementTree
 
 app = Flask(__name__)
+TEMPLATE_DB_PATH = os.getenv("TEMPLATE_DB_PATH", os.path.join(app.root_path, "templates.db"))
+ALLOWED_TEMPLATE_MODES = {"ct", "mri"}
 
 
 @app.route("/")
@@ -267,6 +272,149 @@ def _extract_template_text(filename, content):
     return ""
 
 
+def _db_connect():
+    conn = sqlite3.connect(TEMPLATE_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_templates_db():
+    with _db_connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS templates (
+                id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                region TEXT NOT NULL,
+                title TEXT NOT NULL,
+                technique TEXT NOT NULL DEFAULT '',
+                findings TEXT NOT NULL DEFAULT '',
+                impression TEXT NOT NULL DEFAULT '',
+                source_text TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(mode, region, title)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_templates_mode_region ON templates (mode, region)"
+        )
+
+
+def _clean_template_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("Payload inválido.")
+
+    mode = str(payload.get("mode", "")).strip().lower()
+    region = str(payload.get("region", "")).strip().lower()
+    title = str(payload.get("title", "")).strip()
+    template_id = str(payload.get("id", "")).strip()
+
+    if mode not in ALLOWED_TEMPLATE_MODES:
+        raise ValueError("Modalidade inválida. Use ct ou mri.")
+    if not region:
+        raise ValueError("Área anatômica é obrigatória.")
+    if not title:
+        raise ValueError("Título do template é obrigatório.")
+
+    def _text(key):
+        value = payload.get(key, "")
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (list, tuple)):
+            return "\n".join([str(item) for item in value if item is not None]).strip()
+        return str(value).strip()
+
+    cleaned = {
+        "id": template_id,
+        "mode": mode,
+        "region": region,
+        "title": title,
+        "technique": _text("technique"),
+        "findings": _text("findings"),
+        "impression": _text("impression"),
+        "source_text": _text("sourceText"),
+    }
+    if not (cleaned["technique"] or cleaned["findings"] or cleaned["impression"] or cleaned["source_text"]):
+        raise ValueError("Template sem conteúdo.")
+    return cleaned
+
+
+def _template_row_to_json(row):
+    return {
+        "id": row["id"],
+        "mode": row["mode"],
+        "region": row["region"],
+        "title": row["title"],
+        "technique": row["technique"],
+        "findings": row["findings"],
+        "impression": row["impression"],
+        "sourceText": row["source_text"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _now_iso_utc():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _upsert_template_with_connection(conn, payload):
+    item = _clean_template_payload(payload)
+    now = _now_iso_utc()
+
+    existing = None
+    if item["id"]:
+        existing = conn.execute("SELECT * FROM templates WHERE id = ?", (item["id"],)).fetchone()
+    if not existing:
+        existing = conn.execute(
+            "SELECT * FROM templates WHERE mode = ? AND region = ? AND title = ?",
+            (item["mode"], item["region"], item["title"]),
+        ).fetchone()
+
+    created = existing is None
+    template_id = existing["id"] if existing else (item["id"] or str(uuid.uuid4()))
+    created_at = existing["created_at"] if existing else now
+
+    conn.execute(
+        """
+        INSERT INTO templates (
+            id, mode, region, title, technique, findings, impression, source_text, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            mode = excluded.mode,
+            region = excluded.region,
+            title = excluded.title,
+            technique = excluded.technique,
+            findings = excluded.findings,
+            impression = excluded.impression,
+            source_text = excluded.source_text,
+            updated_at = excluded.updated_at
+        """,
+        (
+            template_id,
+            item["mode"],
+            item["region"],
+            item["title"],
+            item["technique"],
+            item["findings"],
+            item["impression"],
+            item["source_text"],
+            created_at,
+            now,
+        ),
+    )
+
+    row = conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,)).fetchone()
+    return _template_row_to_json(row), created
+
+
+_init_templates_db()
+
+
 @app.route("/extract-template-text", methods=["POST"])
 def extract_template_text():
     uploaded = request.files.get("file")
@@ -294,6 +442,82 @@ def extract_template_text():
         }), 422
 
     return jsonify({"text": cleaned, "filename": uploaded.filename})
+
+
+@app.route("/templates", methods=["GET"])
+def list_templates():
+    try:
+        with _db_connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM templates
+                ORDER BY
+                    CASE mode WHEN 'ct' THEN 0 WHEN 'mri' THEN 1 ELSE 9 END,
+                    region COLLATE NOCASE ASC,
+                    title COLLATE NOCASE ASC
+                """
+            ).fetchall()
+        return jsonify({"templates": [_template_row_to_json(row) for row in rows]})
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao listar templates: {exc}"}), 500
+
+
+@app.route("/templates", methods=["POST"])
+def save_template():
+    data = request.get_json(silent=True) or {}
+    try:
+        with _db_connect() as conn:
+            template, created = _upsert_template_with_connection(conn, data)
+        return jsonify({"template": template, "created": created})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao salvar template: {exc}"}), 500
+
+
+@app.route("/templates/bulk", methods=["POST"])
+def save_templates_bulk():
+    data = request.get_json(silent=True) or {}
+    items = data.get("templates")
+    if not isinstance(items, list):
+        return jsonify({"error": "Campo templates deve ser uma lista."}), 400
+    if len(items) > 1000:
+        return jsonify({"error": "Limite excedido. Envie no máximo 1000 templates por requisição."}), 413
+
+    saved = []
+    created_count = 0
+    updated_count = 0
+    invalid_count = 0
+    errors = []
+
+    try:
+        with _db_connect() as conn:
+            for index, item in enumerate(items):
+                try:
+                    template, created = _upsert_template_with_connection(conn, item)
+                    saved.append(template)
+                    if created:
+                        created_count += 1
+                    else:
+                        updated_count += 1
+                except ValueError as exc:
+                    invalid_count += 1
+                    errors.append({"index": index, "error": str(exc)})
+                except sqlite3.Error as exc:
+                    invalid_count += 1
+                    errors.append({"index": index, "error": str(exc)})
+
+        response = {
+            "templates": saved,
+            "created": created_count,
+            "updated": updated_count,
+            "invalid": invalid_count,
+        }
+        if errors:
+            response["errors"] = errors[:25]
+        return jsonify(response)
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao salvar templates em lote: {exc}"}), 500
 
 
 @app.route("/generate", methods=["POST"])
