@@ -65,4 +65,5 @@ Use `.env.example` como base:
 - Se nao houver suporte, o app segue funcionando com digitacao manual.
 - O rascunho fica salvo no `localStorage` do navegador.
 - Templates personalizados agora sao persistidos no servidor (SQLite), ficando acessiveis de qualquer computador apontando para o mesmo app.
+- API keys de provedores externos (OpenAI/Gemini) podem ser salvas globalmente no servidor; o valor nao e retornado para o frontend.
 - Use o botao de tema para alternar claro/escuro; a preferencia fica salva.

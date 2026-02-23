@@ -16,6 +16,7 @@ from xml.etree import ElementTree
 app = Flask(__name__)
 TEMPLATE_DB_PATH = os.getenv("TEMPLATE_DB_PATH", os.path.join(app.root_path, "templates.db"))
 ALLOWED_TEMPLATE_MODES = {"ct", "mri"}
+API_KEY_PROVIDERS = {"openai", "gemini"}
 
 
 @app.route("/")
@@ -300,6 +301,15 @@ def _init_templates_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_templates_mode_region ON templates (mode, region)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS api_keys (
+                provider TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
 
 def _clean_template_payload(payload):
@@ -360,6 +370,63 @@ def _template_row_to_json(row):
 
 def _now_iso_utc():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _normalize_provider(provider):
+    return str(provider or "").strip().lower()
+
+
+def _save_global_api_key(provider, api_key):
+    clean_provider = _normalize_provider(provider)
+    clean_key = str(api_key or "").strip()
+    if clean_provider not in API_KEY_PROVIDERS:
+        raise ValueError("Provedor inválido para chave global.")
+    if not clean_key:
+        raise ValueError("API key vazia.")
+
+    now = _now_iso_utc()
+    with _db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO api_keys (provider, api_key, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(provider) DO UPDATE SET
+                api_key = excluded.api_key,
+                updated_at = excluded.updated_at
+            """,
+            (clean_provider, clean_key, now),
+        )
+
+
+def _get_global_api_key(provider):
+    clean_provider = _normalize_provider(provider)
+    if clean_provider not in API_KEY_PROVIDERS:
+        return ""
+    with _db_connect() as conn:
+        row = conn.execute(
+            "SELECT api_key FROM api_keys WHERE provider = ?",
+            (clean_provider,),
+        ).fetchone()
+    if not row:
+        return ""
+    return str(row["api_key"] or "").strip()
+
+
+def _resolve_api_key(provider, request_api_key):
+    provided = str(request_api_key or "").strip()
+    if provided:
+        return provided
+    return _get_global_api_key(provider)
+
+
+def _global_api_key_status():
+    with _db_connect() as conn:
+        rows = conn.execute("SELECT provider FROM api_keys").fetchall()
+    providers = {str(row["provider"]).strip().lower() for row in rows}
+    return {
+        "openaiConfigured": "openai" in providers,
+        "geminiConfigured": "gemini" in providers,
+    }
 
 
 def _upsert_template_with_connection(conn, payload):
@@ -520,6 +587,34 @@ def save_templates_bulk():
         return jsonify({"error": f"Erro ao salvar templates em lote: {exc}"}), 500
 
 
+@app.route("/api-keys", methods=["POST"])
+def save_global_api_key():
+    data = request.get_json(silent=True) or {}
+    provider = _normalize_provider(data.get("provider"))
+    api_key = str(data.get("apiKey", "")).strip()
+    if provider not in API_KEY_PROVIDERS:
+        return jsonify({"error": "Provedor inválido. Use openai ou gemini."}), 400
+    if not api_key:
+        return jsonify({"error": "API key é obrigatória."}), 400
+
+    try:
+        _save_global_api_key(provider, api_key)
+        status = _global_api_key_status()
+        return jsonify({"ok": True, "status": status})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao salvar API key global: {exc}"}), 500
+
+
+@app.route("/api-keys/status", methods=["GET"])
+def global_api_key_status():
+    try:
+        return jsonify(_global_api_key_status())
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao consultar status das API keys: {exc}"}), 500
+
+
 @app.route("/generate", methods=["POST"])
 def generate_report():
     try:
@@ -527,14 +622,17 @@ def generate_report():
         provider = data.get("provider", "openai")
         model = data.get("model", "").strip()
         base_url = data.get("baseUrl", "").strip()
-        api_key = data.get("apiKey", "").strip()
+        api_key = _resolve_api_key(provider, data.get("apiKey", ""))
         payload = data.get("payload", {}) or {}
 
         if not model:
             return jsonify({"error": "Modelo não informado."}), 400
 
         if provider in ("openai", "gemini") and not api_key:
-            return jsonify({"error": "API Key é obrigatória para API externa."}), 400
+            return jsonify({
+                "error": "API Key é obrigatória para API externa.",
+                "detail": "Salve a API key global no servidor para este provedor.",
+            }), 400
 
         if not base_url:
             if provider == "lmstudio":
@@ -639,11 +737,14 @@ def list_models():
     data = request.get_json(silent=True) or {}
     provider = data.get("provider", "openai")
     base_url = data.get("baseUrl", "").strip()
-    api_key = data.get("apiKey", "").strip()
+    api_key = _resolve_api_key(provider, data.get("apiKey", ""))
     loaded_only = bool(data.get("loadedOnly"))
 
     if provider in ("openai", "gemini") and not api_key:
-        return jsonify({"error": "API Key é obrigatória para listar modelos."}), 400
+        return jsonify({
+            "error": "API Key é obrigatória para listar modelos.",
+            "detail": "Salve a API key global no servidor para este provedor.",
+        }), 400
 
     if not base_url:
         if provider == "lmstudio":
