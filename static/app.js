@@ -331,6 +331,52 @@ function saveStoredCustomTemplateList(templateList) {
   window.localStorage.setItem(customTemplatesKey, JSON.stringify(listToLegacyTemplateMap(deduped)));
 }
 
+async function fetchTemplatesFromServer() {
+  const response = await fetch("/templates", { method: "GET" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Falha ao carregar templates do servidor.");
+  }
+  const list = Array.isArray(data.templates) ? data.templates : [];
+  return dedupeTemplateList(list);
+}
+
+async function upsertTemplateOnServer(templateEntry) {
+  const response = await fetch("/templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(templateEntry),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Falha ao salvar template no servidor.");
+  }
+  const normalized = normalizeTemplateEntry(data.template || templateEntry);
+  if (!normalized) {
+    throw new Error("Resposta inválida ao salvar template.");
+  }
+  return { template: normalized, created: !!data.created };
+}
+
+async function upsertTemplatesOnServer(templateEntries) {
+  const response = await fetch("/templates/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ templates: templateEntries }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Falha ao salvar templates em lote no servidor.");
+  }
+  const saved = Array.isArray(data.templates) ? dedupeTemplateList(data.templates) : [];
+  return {
+    templates: saved,
+    created: Number(data.created || 0),
+    updated: Number(data.updated || 0),
+    invalid: Number(data.invalid || 0),
+  };
+}
+
 function getSpecificTemplatesForSelection(mode, region) {
   return customTemplateList
     .filter((entry) => entry.mode === mode && entry.region === region)
@@ -364,11 +410,13 @@ function refreshSpecificTemplateOptions(preferredValue = "") {
   }
 }
 
-function updateTemplateStatus(templateList) {
+function updateTemplateStatus(templateList, warningMessage = "") {
   if (!templateStatusEl) return;
   const count = (templateList || []).length;
   if (!count) {
-    templateStatusEl.textContent = "Nenhum template personalizado carregado.";
+    templateStatusEl.textContent = warningMessage
+      ? `Nenhum template personalizado carregado. ${warningMessage}`
+      : "Nenhum template personalizado carregado.";
     return;
   }
   const titles = templateList
@@ -377,18 +425,34 @@ function updateTemplateStatus(templateList) {
     .slice(0, 3);
   const suffix = count > 3 ? " ..." : "";
   const titlesText = titles.length ? ` | ${titles.join(" | ")}${suffix}` : "";
-  templateStatusEl.textContent = `${count} template(s) personalizado(s) carregado(s).${titlesText}`;
+  const warningText = warningMessage ? ` | ${warningMessage}` : "";
+  templateStatusEl.textContent = `${count} template(s) personalizado(s) carregado(s).${titlesText}${warningText}`;
 }
 
-function loadCustomTemplates() {
-  if (!window.localStorage) {
-    customTemplateList = [];
-    updateTemplateStatus(customTemplateList);
-    refreshSpecificTemplateOptions();
-    return;
+async function loadCustomTemplates() {
+  const cachedLocal = window.localStorage ? getStoredCustomTemplateList() : [];
+  let warning = "";
+
+  try {
+    const fromServer = await fetchTemplatesFromServer();
+    customTemplateList = dedupeTemplateList(fromServer);
+
+    // Migra cache local antigo para o servidor uma única vez quando necessário.
+    if (cachedLocal.length) {
+      const serverKeys = new Set(customTemplateList.map((entry) => templateMatchKey(entry)));
+      const missing = cachedLocal.filter((entry) => !serverKeys.has(templateMatchKey(entry)));
+      if (missing.length) {
+        await upsertTemplatesOnServer(missing);
+        customTemplateList = await fetchTemplatesFromServer();
+      }
+    }
+  } catch (err) {
+    customTemplateList = cachedLocal;
+    warning = "Falha de sincronização com servidor; usando cache local deste navegador.";
   }
-  customTemplateList = getStoredCustomTemplateList();
-  updateTemplateStatus(customTemplateList);
+
+  saveStoredCustomTemplateList(customTemplateList);
+  updateTemplateStatus(customTemplateList, warning);
   refreshSpecificTemplateOptions();
 }
 
@@ -609,7 +673,7 @@ function upsertCustomTemplate(entry) {
     customTemplateList[existingIndex] = {
       ...current,
       ...normalized,
-      id: current.id || normalized.id,
+      id: normalized.id || current.id,
     };
     return { added: false, updated: true, entry: customTemplateList[existingIndex] };
   }
@@ -618,7 +682,7 @@ function upsertCustomTemplate(entry) {
   return { added: true, updated: false, entry: normalized };
 }
 
-function saveTemplateFromModal() {
+async function saveTemplateFromModal() {
   if (!templateModeSelectEl || !templateRegionSelectEl || !templateContentInputEl) return;
 
   const mode = templateModeSelectEl.value === "mri" ? "mri" : "ct";
@@ -633,7 +697,7 @@ function saveTemplateFromModal() {
   }
 
   const sections = extractTemplateSections(content);
-  const upsertResult = upsertCustomTemplate({
+  const payload = {
     mode,
     region,
     title,
@@ -641,9 +705,19 @@ function saveTemplateFromModal() {
     technique: sections.technique || "",
     findings: sections.findings || "",
     impression: sections.impression || "",
-  });
+  };
+
+  let serverSaved = null;
+  try {
+    serverSaved = await upsertTemplateOnServer(payload);
+  } catch (err) {
+    window.alert(err.message || "Não foi possível salvar o template no servidor.");
+    return;
+  }
+
+  const upsertResult = upsertCustomTemplate(serverSaved.template);
   if (!upsertResult.entry) {
-    window.alert("Não foi possível salvar o template.");
+    window.alert("Não foi possível atualizar a lista local de templates.");
     return;
   }
 
@@ -651,14 +725,14 @@ function saveTemplateFromModal() {
   updateTemplateStatus(customTemplateList);
   refreshSpecificTemplateOptions(upsertResult.entry.id);
 
-  const verb = upsertResult.updated ? "atualizado" : "salvo";
+  const verb = serverSaved.created ? "salvo" : "atualizado";
   const sourceName = pendingTemplateFilename;
   closeTemplateModal();
   const src = sourceName ? ` (${sourceName})` : "";
   window.alert(`Template ${verb} com sucesso${src}.`);
 }
 
-function importTemplatesFromJsonContent(text) {
+async function importTemplatesFromJsonContent(text) {
   const parsed = JSON.parse(text);
   const normalized = normalizeTemplatePayload(parsed);
   if (!normalized) {
@@ -667,14 +741,13 @@ function importTemplatesFromJsonContent(text) {
     );
   }
 
-  let added = 0;
-  let updated = 0;
+  const entries = [];
   ["ct", "mri"].forEach((mode) => {
     const modeTemplates = normalized[mode];
     if (!modeTemplates) return;
     Object.keys(modeTemplates).forEach((region) => {
       const template = modeTemplates[region];
-      const result = upsertCustomTemplate({
+      const entry = normalizeTemplateEntry({
         mode,
         region,
         title: template.title || `${mode === "ct" ? "TC" : "RM"} ${regionLabels[region] || region}`,
@@ -683,15 +756,19 @@ function importTemplatesFromJsonContent(text) {
         impression: template.impression || "",
         sourceText: template.sourceText || "",
       });
-      if (result.added) added += 1;
-      if (result.updated) updated += 1;
+      if (entry) entries.push(entry);
     });
   });
+  if (!entries.length) {
+    throw new Error("Nenhum template válido encontrado no JSON.");
+  }
 
+  const savedResult = await upsertTemplatesOnServer(entries);
+  customTemplateList = await fetchTemplatesFromServer();
   saveStoredCustomTemplateList(customTemplateList);
   updateTemplateStatus(customTemplateList);
   refreshSpecificTemplateOptions();
-  return { added, updated };
+  return { added: savedResult.created, updated: savedResult.updated, invalid: savedResult.invalid };
 }
 
 async function handleTemplateFileImport(file) {
@@ -702,8 +779,11 @@ async function handleTemplateFileImport(file) {
 
   if (extension === "json") {
     const text = await file.text();
-    const result = importTemplatesFromJsonContent(text);
-    window.alert(`Templates importados com sucesso: ${result.added} novo(s), ${result.updated} atualizado(s).`);
+    const result = await importTemplatesFromJsonContent(text);
+    const invalidInfo = result.invalid ? `, ${result.invalid} inválido(s)` : "";
+    window.alert(
+      `Templates importados com sucesso: ${result.added} novo(s), ${result.updated} atualizado(s)${invalidInfo}.`
+    );
     return;
   }
 
@@ -1463,7 +1543,11 @@ micButtons.forEach((btn) => {
 });
 
 initTheme();
-loadCustomTemplates();
+loadCustomTemplates().catch(() => {
+  customTemplateList = window.localStorage ? getStoredCustomTemplateList() : [];
+  updateTemplateStatus(customTemplateList, "Falha ao sincronizar templates com servidor.");
+  refreshSpecificTemplateOptions();
+});
 loadAiPrefs();
 updateAiDefaults();
 if (refreshModelsBtn) {
