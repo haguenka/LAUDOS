@@ -77,10 +77,16 @@ def _extract_json_block(text):
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start == -1 or end == -1 or end <= start:
+        tolerant = _extract_sections_from_json_like_text(cleaned)
+        if tolerant:
+            return tolerant
         return None
     try:
         return json.loads(cleaned[start : end + 1])
     except json.JSONDecodeError:
+        tolerant = _extract_sections_from_json_like_text(cleaned)
+        if tolerant:
+            return tolerant
         return None
 
 
@@ -125,6 +131,67 @@ def _coerce_text(value):
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
+
+
+def _strip_markdown_fences(text):
+    if not text:
+        return ""
+    cleaned = str(text).strip()
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return cleaned
+
+
+def _extract_sections_from_json_like_text(text):
+    if not text:
+        return None
+    cleaned = _strip_markdown_fences(text)
+    if not cleaned:
+        return None
+
+    key_pattern = re.compile(
+        r'"?(technique|tecnica|técnica|findings|laudo|achados|impression|impressao|impressão)"?\s*:',
+        flags=re.IGNORECASE,
+    )
+    matches = list(key_pattern.finditer(cleaned))
+    if not matches:
+        return None
+
+    sections = {"technique": "", "findings": "", "impression": ""}
+    for index, match in enumerate(matches):
+        raw_key = match.group(1).strip().lower()
+        value_start = match.end()
+        value_end = matches[index + 1].start() if index + 1 < len(matches) else len(cleaned)
+        raw_value = cleaned[value_start:value_end].strip()
+
+        # Remove separadores JSON comuns.
+        raw_value = re.sub(r"^[\s:]+", "", raw_value)
+        raw_value = re.sub(r",\s*$", "", raw_value)
+        raw_value = re.sub(r"}\s*$", "", raw_value)
+        raw_value = re.sub(r"^\{", "", raw_value).strip()
+
+        # Captura conteúdo entre aspas quando existir.
+        quoted = re.match(r'^"([\s\S]*)"$', raw_value)
+        if quoted:
+            value = quoted.group(1)
+        else:
+            value = raw_value
+
+        value = value.replace('\\"', '"').replace("\\n", "\n").replace("\\t", "\t").strip()
+        if not value:
+            continue
+
+        if raw_key in ("technique", "tecnica", "técnica"):
+            sections["technique"] = value
+        elif raw_key in ("findings", "laudo", "achados"):
+            sections["findings"] = value
+        elif raw_key in ("impression", "impressao", "impressão"):
+            sections["impression"] = value
+
+    if any(sections.values()):
+        return sections
+    return None
 
 
 def _extract_sections_from_dict(parsed):
