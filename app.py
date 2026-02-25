@@ -1266,10 +1266,43 @@ def generate_report():
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.2,
-            "max_tokens": 900,
         }
+        if provider == "openai":
+            body["max_completion_tokens"] = 900
+        else:
+            body["max_tokens"] = 900
 
         response = requests.post(url, headers=headers, json=body, timeout=90)
+        if response.status_code == 400:
+            retry_body = None
+            try:
+                error_payload = response.json()
+            except ValueError:
+                error_payload = {}
+
+            error_obj = error_payload.get("error") if isinstance(error_payload, dict) else {}
+            if isinstance(error_obj, dict):
+                param_name = str(error_obj.get("param", "") or "").strip().lower()
+                message = str(error_obj.get("message", "") or "").lower()
+                unsupported_tokens = "unsupported parameter" in message and (
+                    "max_tokens" in message or "max_completion_tokens" in message
+                )
+
+                if param_name == "max_tokens" or ("max_tokens" in message and unsupported_tokens):
+                    retry_body = dict(body)
+                    retry_body.pop("max_tokens", None)
+                    retry_body["max_completion_tokens"] = 900
+                elif param_name == "max_completion_tokens" or ("max_completion_tokens" in message and unsupported_tokens):
+                    retry_body = dict(body)
+                    retry_body.pop("max_completion_tokens", None)
+                    retry_body["max_tokens"] = 900
+                elif param_name == "temperature" or ("unsupported parameter" in message and "temperature" in message):
+                    retry_body = dict(body)
+                    retry_body.pop("temperature", None)
+
+            if retry_body is not None:
+                response = requests.post(url, headers=headers, json=retry_body, timeout=90)
+
         if not response.ok:
             detail = ""
             try:
