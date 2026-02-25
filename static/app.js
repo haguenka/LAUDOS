@@ -1118,6 +1118,17 @@ async function generateWithAi() {
       throw new Error((data.error || "Falha ao gerar laudo.") + detail);
     }
 
+    const resolvedMode = sanitizeMode(data && data.resolvedMode ? data.resolvedMode : "");
+    const resolvedRegion = sanitizeRegion(data && data.resolvedRegion ? data.resolvedRegion : "");
+
+    if (resolvedMode && resolvedMode !== state.mode) {
+      setMode(resolvedMode);
+    }
+    if (resolvedRegion && regionSelect && regionSelect.value !== resolvedRegion) {
+      regionSelect.value = resolvedRegion;
+      refreshSpecificTemplateOptions();
+    }
+
     const normalizedSections = normalizeAiSectionsPayload(data);
     document.getElementById("technique").value = normalizedSections.technique || "";
     document.getElementById("findings").value = formatFindingsText(normalizedSections.findings || "");
