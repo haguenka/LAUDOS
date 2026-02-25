@@ -646,6 +646,7 @@ def generate_report():
         mode = payload.get("mode", "")
         region = payload.get("region", "")
         contrast = payload.get("contrast", "")
+        request_prompt = str(payload.get("requestPrompt", "") or "").strip()
 
         system_prompt = (
             "Você é um radiologista senior experiente. Sua função é gerar laudos precisos e objetivos "
@@ -655,21 +656,32 @@ def generate_report():
             "Cada valor deve conter apenas o conteúdo da sua seção, sem títulos ou rótulos. "
             "A impressão deve ser coerente e derivada exclusivamente dos achados apresentados "
             "(se a impressão ditada estiver vazia ou incompleta, sintetize a partir dos achados). "
-            "Evite inventar achados não mencionados; se faltar informação, use linguagem cautelosa."
+            "Evite inventar achados não mencionados; se faltar informação, use linguagem cautelosa. "
+            "Quando houver solicitação explícita de laudo padrão/modelo, você pode gerar um texto-base "
+            "coerente com a modalidade e com o cenário clínico solicitado."
         )
+
+        request_block = ""
+        if request_prompt:
+            request_block = (
+                "Solicitação específica do usuário para este laudo:\n"
+                f"- {request_prompt}\n\n"
+            )
 
         user_prompt = (
             "Contexto do exame:\n"
             f"- Modalidade: {mode}\n"
             f"- Região: {region}\n"
             f"- Contraste: {contrast}\n\n"
+            f"{request_block}"
             "Frases ditadas pelo médico (podem estar incompletas):\n"
             f"- Indicação clínica: {dictation.get('indication', '')}\n"
             f"- Informações adicionais: {dictation.get('extraInfo', '')}\n"
             f"- Técnica ditada: {dictation.get('technique', '')}\n"
             f"- Achados ditados: {dictation.get('findings', '')}\n"
             f"- Impressão ditada: {dictation.get('impression', '')}\n\n"
-            "Transforme essas frases em um laudo coeso, preservando o conteúdo dito."
+            "Transforme essas frases em um laudo coeso, preservando o conteúdo dito. "
+            "Se houver solicitação específica acima, priorize-a na construção do laudo."
         )
 
         url = base_url.rstrip("/") + "/chat/completions"
