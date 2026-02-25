@@ -1118,16 +1118,10 @@ async function generateWithAi() {
       throw new Error((data.error || "Falha ao gerar laudo.") + detail);
     }
 
-    if (data.technique !== undefined) {
-      document.getElementById("technique").value = data.technique;
-    }
-    const laudoFromApi = data.laudo !== undefined ? data.laudo : data.findings;
-    if (laudoFromApi !== undefined) {
-      document.getElementById("findings").value = formatFindingsText(laudoFromApi);
-    }
-    if (data.impression !== undefined) {
-      document.getElementById("impression").value = data.impression;
-    }
+    const normalizedSections = normalizeAiSectionsPayload(data);
+    document.getElementById("technique").value = normalizedSections.technique || "";
+    document.getElementById("findings").value = formatFindingsText(normalizedSections.findings || "");
+    document.getElementById("impression").value = normalizedSections.impression || "";
 
     ensureReport();
     setAiStatus("Pronto", "live");
@@ -1143,6 +1137,74 @@ async function generateWithAi() {
 
 function valueOf(id) {
   return document.getElementById(id).value.trim();
+}
+
+function tryParseJsonFromText(value) {
+  if (!value || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidates = [];
+  if (fenced && fenced[1]) candidates.push(fenced[1].trim());
+  candidates.push(trimmed);
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (err) {
+      // tenta bloco entre chaves
+    }
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      try {
+        const parsed = JSON.parse(candidate.slice(start, end + 1));
+        if (parsed && typeof parsed === "object") return parsed;
+      } catch (err) {
+        // ignora
+      }
+    }
+  }
+  return null;
+}
+
+function extractAiField(parsed, aliases) {
+  if (!parsed || typeof parsed !== "object") return "";
+  const keys = Object.keys(parsed);
+  for (const alias of aliases) {
+    const found = keys.find((key) => key.toLowerCase() === alias);
+    if (found !== undefined && parsed[found] !== undefined && parsed[found] !== null) {
+      return String(parsed[found]).trim();
+    }
+  }
+  return "";
+}
+
+function normalizeAiSectionsPayload(data) {
+  const output = {
+    technique: data && data.technique ? String(data.technique).trim() : "",
+    findings:
+      data && data.laudo !== undefined
+        ? String(data.laudo || "").trim()
+        : data && data.findings !== undefined
+          ? String(data.findings || "").trim()
+          : "",
+    impression: data && data.impression ? String(data.impression).trim() : "",
+  };
+
+  const blobCandidates = [output.findings, output.impression, output.technique].filter(Boolean);
+  for (const blob of blobCandidates) {
+    const parsed = tryParseJsonFromText(blob);
+    if (!parsed) continue;
+    const parsedTechnique = extractAiField(parsed, ["technique", "tecnica", "técnica"]);
+    const parsedFindings = extractAiField(parsed, ["findings", "laudo", "achados", "report", "descricao", "descrição"]);
+    const parsedImpression = extractAiField(parsed, ["impression", "impressao", "impressão", "conclusion", "conclusao", "conclusão"]);
+    if (!output.technique && parsedTechnique) output.technique = parsedTechnique;
+    if (!output.findings && parsedFindings) output.findings = parsedFindings;
+    if (!output.impression && parsedImpression) output.impression = parsedImpression;
+  }
+
+  return output;
 }
 
 function formatFindingsText(text) {
