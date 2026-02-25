@@ -1168,6 +1168,45 @@ function tryParseJsonFromText(value) {
   return null;
 }
 
+function extractAiSectionsFromJsonLikeText(value) {
+  if (!value || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const text = fence && fence[1] ? fence[1].trim() : trimmed;
+  if (!text) return null;
+
+  const keyRegex =
+    /"?(technique|tecnica|técnica|findings|laudo|achados|impression|impressao|impressão)"?\s*:/gi;
+  const matches = Array.from(text.matchAll(keyRegex));
+  if (!matches.length) return null;
+
+  const out = { technique: "", findings: "", impression: "" };
+  for (let i = 0; i < matches.length; i += 1) {
+    const current = matches[i];
+    const rawKey = (current[1] || "").toLowerCase();
+    const valueStart = current.index + current[0].length;
+    const valueEnd = i + 1 < matches.length ? matches[i + 1].index : text.length;
+    let rawValue = text.slice(valueStart, valueEnd).trim();
+
+    rawValue = rawValue.replace(/^[\s:]+/, "").replace(/,\s*$/, "").replace(/}\s*$/, "").trim();
+    const quoted = rawValue.match(/^"([\s\S]*)"$/);
+    let parsedValue = quoted ? quoted[1] : rawValue;
+    parsedValue = parsedValue
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .trim();
+    if (!parsedValue) continue;
+
+    if (["technique", "tecnica", "técnica"].includes(rawKey)) out.technique = parsedValue;
+    if (["findings", "laudo", "achados"].includes(rawKey)) out.findings = parsedValue;
+    if (["impression", "impressao", "impressão"].includes(rawKey)) out.impression = parsedValue;
+  }
+
+  if (out.technique || out.findings || out.impression) return out;
+  return null;
+}
+
 function extractAiField(parsed, aliases) {
   if (!parsed || typeof parsed !== "object") return "";
   const keys = Object.keys(parsed);
@@ -1195,10 +1234,17 @@ function normalizeAiSectionsPayload(data) {
   const blobCandidates = [output.findings, output.impression, output.technique].filter(Boolean);
   for (const blob of blobCandidates) {
     const parsed = tryParseJsonFromText(blob);
-    if (!parsed) continue;
-    const parsedTechnique = extractAiField(parsed, ["technique", "tecnica", "técnica"]);
-    const parsedFindings = extractAiField(parsed, ["findings", "laudo", "achados", "report", "descricao", "descrição"]);
-    const parsedImpression = extractAiField(parsed, ["impression", "impressao", "impressão", "conclusion", "conclusao", "conclusão"]);
+    const parsedSections = parsed
+      ? {
+          technique: extractAiField(parsed, ["technique", "tecnica", "técnica"]),
+          findings: extractAiField(parsed, ["findings", "laudo", "achados", "report", "descricao", "descrição"]),
+          impression: extractAiField(parsed, ["impression", "impressao", "impressão", "conclusion", "conclusao", "conclusão"]),
+        }
+      : extractAiSectionsFromJsonLikeText(blob);
+    if (!parsedSections) continue;
+    const parsedTechnique = parsedSections.technique || "";
+    const parsedFindings = parsedSections.findings || "";
+    const parsedImpression = parsedSections.impression || "";
     if (!output.technique && parsedTechnique) output.technique = parsedTechnique;
     if (!output.findings && parsedFindings) output.findings = parsedFindings;
     if (!output.impression && parsedImpression) output.impression = parsedImpression;
