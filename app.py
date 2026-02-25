@@ -10,12 +10,24 @@ import subprocess
 import tempfile
 import uuid
 import zipfile
+import unicodedata
 from datetime import datetime, timezone
 from xml.etree import ElementTree
 
 app = Flask(__name__)
 TEMPLATE_DB_PATH = os.getenv("TEMPLATE_DB_PATH", os.path.join(app.root_path, "templates.db"))
 ALLOWED_TEMPLATE_MODES = {"ct", "mri"}
+ALLOWED_TEMPLATE_REGIONS = {
+    "cranio",
+    "pescoco",
+    "torax",
+    "abdomen",
+    "abdome_pelve",
+    "coluna",
+    "pelve",
+    "osteo",
+    "vascular",
+}
 API_KEY_PROVIDERS = {"openai", "gemini"}
 
 
@@ -254,10 +266,20 @@ def _normalize_sections(parsed, raw_content):
             if parsed_sections:
                 return parsed_sections
 
-    if not (technique or findings or impression) and raw_content:
-        parsed_sections = _extract_sections_from_text(raw_content)
-        if parsed_sections:
-            return parsed_sections
+    if raw_content:
+        parsed_sections = _extract_sections_from_text(raw_content) or {}
+        raw_technique = _clean_inline_text(parsed_sections.get("technique", ""))
+        raw_findings = _clean_inline_text(parsed_sections.get("findings", ""))
+        raw_impression = _clean_inline_text(parsed_sections.get("impression", ""))
+
+        if _is_json_like_text(raw_findings):
+            raw_findings = ""
+        if _is_json_like_text(raw_impression):
+            raw_impression = ""
+
+        technique = technique or raw_technique
+        findings = findings or raw_findings
+        impression = impression or raw_impression
 
     return {"technique": technique, "findings": findings, "impression": impression}
 
@@ -267,7 +289,112 @@ def _clean_inline_text(value):
         return ""
     text = str(value).replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip().strip(",;").strip()
+
+    # Remove artefatos comuns de respostas em JSON/markdown.
+    text = re.sub(r"^\s*```(?:json|text|markdown)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```\s*$", "", text)
+    text = re.sub(r"^\s*json\s*\n", "", text, flags=re.IGNORECASE)
+    text = text.strip()
+
+    # Remove pares de aspas/crases que envolvem o texto inteiro.
+    for _ in range(3):
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'", "`"):
+            text = text[1:-1].strip()
+
+    # Remove aspas soltas na borda.
+    text = re.sub(r'^["\'`]+\s*', "", text)
+    text = re.sub(r'\s*["\'`]+$', "", text)
+
     return text.strip()
+
+
+def _strip_accents(text):
+    normalized = unicodedata.normalize("NFD", str(text or ""))
+    return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+
+def _normalize_mode(mode):
+    value = _strip_accents(mode).strip().lower()
+    if value in ("mri", "mr", "rm", "ressonancia", "ressonancia magnetica"):
+        return "mri"
+    if value in ("ct", "tc", "tomografia", "tomografia computadorizada"):
+        return "ct"
+    return ""
+
+
+def _normalize_region(region):
+    value = _strip_accents(region).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "cabeca": "cranio",
+        "encefalo": "cranio",
+        "cerebro": "cranio",
+        "pescoco": "pescoco",
+        "torax": "torax",
+        "abdome": "abdomen",
+        "abdomen": "abdomen",
+        "abdome_e_pelve": "abdome_pelve",
+        "abdomen_e_pelve": "abdome_pelve",
+        "abdomino_pelvico": "abdome_pelve",
+        "abdominopelvico": "abdome_pelve",
+        "coluna": "coluna",
+        "pelve": "pelve",
+        "osteo": "osteo",
+        "osteoarticular": "osteo",
+        "musculoesqueletico": "osteo",
+        "vascular": "vascular",
+    }
+    normalized = aliases.get(value, value)
+    return normalized if normalized in ALLOWED_TEMPLATE_REGIONS else ""
+
+
+def _region_display_label(region):
+    labels = {
+        "cranio": "crânio",
+        "pescoco": "pescoço",
+        "torax": "tórax",
+        "abdomen": "abdome",
+        "abdome_pelve": "abdome e pelve",
+        "coluna": "coluna",
+        "pelve": "pelve",
+        "osteo": "segmento ósteoarticular",
+        "vascular": "segmento vascular",
+    }
+    return labels.get(_normalize_region(region), str(region or "segmento avaliado").replace("_", " "))
+
+
+def _infer_mode_region_from_request(request_prompt, mode, region):
+    req = _strip_accents(request_prompt).lower()
+    mode_clean = _normalize_mode(mode)
+    region_clean = _normalize_region(region)
+
+    if req:
+        if re.search(r"\b(rm|ressonancia|ressonancia magnetica|mri)\b", req):
+            mode_clean = "mri"
+        elif re.search(r"\b(tc|ct|tomografia|tomografia computadorizada)\b", req):
+            mode_clean = "ct"
+
+        region_map = [
+            ("abdome_pelve", ("abdome e pelve", "abdomen e pelve", "abdomino pelvico", "abdominopelvico")),
+            ("cranio", ("cranio", "encefalo", "encefalico", "cerebro", "cabeca")),
+            ("pescoco", ("pescoco", "cervical")),
+            ("torax", ("torax", "toracico", "pulmao", "pulmonar")),
+            ("abdomen", ("abdome", "abdomen")),
+            ("coluna", ("coluna", "vertebral", "lombar", "toracica", "torácica", "cervical")),
+            ("pelve", ("pelve", "pelvico", "pélvico")),
+            ("osteo", ("osteo", "osseo", "ósseo", "articular", "musculoesqueletico", "musculoesquelético", "ombro", "joelho", "quadril", "punho", "cotovelo", "tornozelo")),
+            ("vascular", ("vascular", "angiografia", "angio")),
+        ]
+        for mapped_region, keywords in region_map:
+            if any(keyword in req for keyword in keywords):
+                region_clean = mapped_region
+                break
+
+    if mode_clean not in ALLOWED_TEMPLATE_MODES:
+        mode_clean = "ct"
+    if not region_clean:
+        region_clean = "cranio"
+    return mode_clean, region_clean
 
 
 def _is_json_like_text(text):
@@ -286,7 +413,7 @@ def _is_json_like_text(text):
 
 def _build_default_technique(mode, region, contrast):
     mode_clean = str(mode or "").strip().lower()
-    region_label = str(region or "segmento avaliado").strip().replace("_", " ")
+    region_label = _region_display_label(region)
     contrast_clean = str(contrast or "").strip().lower()
 
     if mode_clean == "ct":
@@ -313,25 +440,171 @@ def _build_default_technique(mode, region, contrast):
     )
 
 
-def _fallback_laudo_text(dictation, request_prompt):
+def _is_low_quality_findings(text):
+    clean = _clean_inline_text(text)
+    if not clean:
+        return True
+    if _is_json_like_text(clean):
+        return True
+    normalized = _strip_accents(clean).lower()
+    bad_markers = (
+        "laudo elaborado conforme solicitacao",
+        "laudo elaborado de acordo com solicitacao",
+        "conforme solicitacao",
+        "de acordo com a solicitacao",
+        "solicitacao do usuario",
+    )
+    if any(marker in normalized for marker in bad_markers):
+        return True
+    if len(clean) < 20:
+        return True
+    return False
+
+
+def _fallback_laudo_text(dictation, request_prompt, mode="", region=""):
+    req = _strip_accents(request_prompt).lower()
+    mode_guess, region_guess = _infer_mode_region_from_request(request_prompt, mode, region)
+
     pieces = []
     if isinstance(dictation, dict):
         if dictation.get("findings"):
-            pieces.append(_clean_inline_text(dictation.get("findings")))
+            findings_text = _clean_inline_text(dictation.get("findings"))
+            if not _is_low_quality_findings(findings_text):
+                pieces.append(findings_text)
         if dictation.get("extraInfo"):
-            pieces.append(_clean_inline_text(dictation.get("extraInfo")))
-    if request_prompt:
-        pieces.append(f"Laudo elaborado conforme solicitação: {_clean_inline_text(request_prompt)}.")
+            extra_text = _clean_inline_text(dictation.get("extraInfo"))
+            if extra_text and len(extra_text) >= 20:
+                pieces.append(extra_text)
+    dictation_combined = "\n".join([item for item in pieces if item]).strip()
 
-    combined = "\n".join([item for item in pieces if item]).strip()
-    if combined:
-        return combined
-    return "Sem alterações significativas descritas no estudo."
+    if mode_guess == "mri" and region_guess == "cranio":
+        if any(token in req for token in ("avc", "acidente vascular", "isquem", "hemorrag")):
+            return (
+                "Parênquima encefálico sem efeito de massa significativo, sem coleções extra-axiais e sem desvio da linha média.\n"
+                "Não se observam sinais de hemorragia intracraniana aguda nem restrição difusional extensa neste exame.\n"
+                "Sistema ventricular e espaços liquóricos sem desvio da linha média."
+            )
+        if any(token in req for token in ("idos", "senil", "envelhecimento")):
+            return (
+                "Discretas alterações involutivas encefálicas, com alargamento dos sulcos corticais e leve proeminência ventricular.\n"
+                "Pequenos focos de hipersinal em substância branca profunda, compatíveis com gliose microangiopática crônica.\n"
+                "Sem lesões expansivas, sem sangramento recente e sem restrição à difusão."
+            )
+        if any(token in req for token in ("neonat", "recem nascido", "recém nascido", "rn")):
+            return (
+                "Parênquima encefálico com sinal e morfologia preservados para a faixa etária neonatal.\n"
+                "Sistema ventricular sem dilatação e sem coleções intracranianas.\n"
+                "Sem evidências de hemorragia intracraniana ou restrição à difusão."
+            )
+        if dictation_combined:
+            return dictation_combined
+        return (
+            "Parênquima encefálico com morfologia e intensidade de sinal preservadas para a faixa etária.\n"
+            "Sem lesões expansivas, sem restrição à difusão e sem sinais de sangramento recente.\n"
+            "Sistema ventricular e espaços liquóricos de dimensões habituais."
+        )
+
+    if mode_guess == "ct" and region_guess == "cranio":
+        if any(token in req for token in ("avc", "acidente vascular", "isquem", "hemorrag")):
+            return (
+                "Ausência de hemorragia intracraniana aguda e de efeito de massa significativo.\n"
+                "Sem desvio da linha média e sem coleções extra-axiais volumosas.\n"
+                "Ventrículos e cisternas da base preservados no estudo atual."
+            )
+        if dictation_combined:
+            return dictation_combined
+        return (
+            "Parênquima encefálico sem sinais de hemorragia aguda ou efeito de massa.\n"
+            "Ventrículos e cisternas da base preservados.\n"
+            "Calota craniana sem fraturas evidentes."
+        )
+
+    region_defaults = {
+        ("ct", "torax"): (
+            "Pulmões sem consolidações focais, derrame pleural ou pneumotórax.\n"
+            "Mediastino sem linfonodomegalias de dimensões patológicas.\n"
+            "Arcabouço ósseo torácico sem alterações agudas evidentes."
+        ),
+        ("mri", "torax"): (
+            "Sem massas mediastinais evidentes no campo avaliado.\n"
+            "Sem derrame pleural significativo.\n"
+            "Estruturas torácicas avaliadas sem alterações focais relevantes."
+        ),
+        ("ct", "abdomen"): (
+            "Fígado, baço, pâncreas e adrenais sem alterações focais agudas evidentes.\n"
+            "Rins sem dilatação pielocalicial significativa.\n"
+            "Sem líquido livre abdominal em volume relevante."
+        ),
+        ("mri", "abdomen"): (
+            "Fígado de sinal homogêneo, sem lesões focais suspeitas no exame atual.\n"
+            "Pâncreas, baço, adrenais e rins sem alterações relevantes.\n"
+            "Sem ascite ou coleções abdominais."
+        ),
+        ("ct", "abdome_pelve"): (
+            "Órgãos abdominais e pélvicos sem alterações agudas relevantes.\n"
+            "Sem coleções intra-abdominais e sem líquido livre em volume significativo.\n"
+            "Sem linfonodomegalias volumosas no território avaliado."
+        ),
+        ("mri", "abdome_pelve"): (
+            "Estruturas abdominais e pélvicas com morfologia preservada no estudo atual.\n"
+            "Sem lesões focais suspeitas ou coleções.\n"
+            "Sem líquido livre pélvico em volume relevante."
+        ),
+        ("ct", "coluna"): (
+            "Alinhamento vertebral preservado, sem colapso vertebral agudo.\n"
+            "Sem fraturas ou listeses agudas evidentes.\n"
+            "Canal vertebral sem estreitamento crítico no segmento avaliado."
+        ),
+        ("mri", "coluna"): (
+            "Alinhamento vertebral preservado no segmento examinado.\n"
+            "Sem compressão medular e sem sinais de lesão expansiva intrarraquidiana.\n"
+            "Discos intervertebrais sem hérnia extrusa significativa."
+        ),
+        ("ct", "pelve"): (
+            "Bexiga com paredes de espessura preservada.\n"
+            "Sem líquido livre pélvico significativo.\n"
+            "Sem alterações agudas dos órgãos pélvicos no exame atual."
+        ),
+        ("mri", "pelve"): (
+            "Órgãos pélvicos com morfologia preservada no campo avaliado.\n"
+            "Sem coleções, sem massas pélvicas evidentes e sem líquido livre relevante.\n"
+            "Estruturas musculoesqueléticas pélvicas sem edema significativo."
+        ),
+        ("ct", "osteo"): (
+            "Estruturas ósseas do segmento avaliado sem fraturas agudas evidentes.\n"
+            "Interlinhas articulares preservadas, sem desalinhamentos significativos.\n"
+            "Partes moles sem coleções."
+        ),
+        ("mri", "osteo"): (
+            "Sem sinais de edema ósseo difuso ou fratura oculta no segmento avaliado.\n"
+            "Tendões e ligamentos principais sem descontinuidades evidentes.\n"
+            "Sem derrame articular volumoso."
+        ),
+        ("ct", "vascular"): (
+            "Vasos do território avaliado com calibres preservados e sem ectasias significativas.\n"
+            "Sem sinais de coleções perivasculares.\n"
+            "Sem achados agudos evidentes no estudo atual."
+        ),
+        ("mri", "vascular"): (
+            "Fluxo preservado nos principais vasos do território examinado.\n"
+            "Sem sinais de oclusão proximal evidente no estudo atual.\n"
+            "Sem coleções perivasculares."
+        ),
+    }
+    region_fallback = region_defaults.get((mode_guess, region_guess))
+    if dictation_combined:
+        return dictation_combined
+    if region_fallback:
+        return region_fallback
+
+    return "Sem alterações significativas descritas no estudo atual."
 
 
 def _fallback_impression_text(laudo_text, dictation):
     if isinstance(dictation, dict) and dictation.get("impression"):
-        return _clean_inline_text(dictation.get("impression"))
+        dictated = _clean_inline_text(dictation.get("impression"))
+        if dictated and not _is_json_like_text(dictated):
+            return dictated
 
     clean_laudo = _clean_inline_text(laudo_text)
     if not clean_laudo:
@@ -379,7 +652,7 @@ def _ensure_required_sections(parsed_sections, raw_content, mode, region, contra
                 if embedded_norm.get("impression"):
                     base["impression"] = _clean_inline_text(embedded_norm.get("impression"))
 
-    if not any(base.values()) and raw_content:
+    if raw_content:
         parsed_from_raw = _extract_sections_from_text(raw_content) or {}
         base["technique"] = base["technique"] or _clean_inline_text(parsed_from_raw.get("technique", ""))
         base["findings"] = base["findings"] or _clean_inline_text(parsed_from_raw.get("findings", ""))
@@ -389,10 +662,10 @@ def _ensure_required_sections(parsed_sections, raw_content, mode, region, contra
         dictated_technique = _clean_inline_text((dictation or {}).get("technique", "")) if isinstance(dictation, dict) else ""
         base["technique"] = dictated_technique or _build_default_technique(mode, region, contrast)
 
-    if not base["findings"]:
-        base["findings"] = _fallback_laudo_text(dictation, request_prompt)
+    if _is_low_quality_findings(base["findings"]):
+        base["findings"] = _fallback_laudo_text(dictation, request_prompt, mode=mode, region=region)
 
-    if not base["impression"]:
+    if (not base["impression"]) or _is_json_like_text(base["impression"]):
         base["impression"] = _fallback_impression_text(base["findings"], dictation)
 
     return {
@@ -936,6 +1209,7 @@ def generate_report():
         region = payload.get("region", "")
         contrast = payload.get("contrast", "")
         request_prompt = str(payload.get("requestPrompt", "") or "").strip()
+        resolved_mode, resolved_region = _infer_mode_region_from_request(request_prompt, mode, region)
 
         system_prompt = (
             "Você é um radiologista senior experiente. Sua função é gerar laudos precisos e objetivos "
@@ -949,7 +1223,9 @@ def generate_report():
             "(se a impressão ditada estiver vazia ou incompleta, sintetize a partir dos achados). "
             "Evite inventar achados não mencionados; se faltar informação, use linguagem cautelosa. "
             "Quando houver solicitação explícita de laudo padrão/modelo, você pode gerar um texto-base "
-            "coerente com a modalidade e com o cenário clínico solicitado."
+            "coerente com a modalidade e com o cenário clínico solicitado. "
+            "NÃO escreva frases metalinguísticas como 'laudo elaborado conforme solicitação'. "
+            "NÃO use markdown, não use bloco de código, e não inclua texto fora do JSON."
         )
 
         request_block = ""
@@ -961,8 +1237,8 @@ def generate_report():
 
         user_prompt = (
             "Contexto do exame:\n"
-            f"- Modalidade: {mode}\n"
-            f"- Região: {region}\n"
+            f"- Modalidade: {resolved_mode}\n"
+            f"- Região: {resolved_region}\n"
             f"- Contraste: {contrast}\n\n"
             f"{request_block}"
             "Frases ditadas pelo médico (podem estar incompletas):\n"
@@ -1024,8 +1300,8 @@ def generate_report():
         enforced = _ensure_required_sections(
             parsed_sections=parsed,
             raw_content=content,
-            mode=mode,
-            region=region,
+            mode=resolved_mode,
+            region=resolved_region,
             contrast=contrast,
             dictation=dictation,
             request_prompt=request_prompt,
@@ -1036,6 +1312,8 @@ def generate_report():
             "laudo": enforced.get("findings", ""),
             "findings": enforced.get("findings", ""),  # Compatibilidade com frontend existente
             "impression": enforced.get("impression", ""),
+            "resolvedMode": resolved_mode,
+            "resolvedRegion": resolved_region,
         })
     except requests.RequestException as exc:
         return jsonify({"error": f"Erro ao chamar modelo: {exc}"}), 502
