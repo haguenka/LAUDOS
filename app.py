@@ -61,7 +61,7 @@ def _extract_sections_from_text(text):
         if "TÉCNICA" in upper or "TECNICA" in upper or upper.startswith("TECHNIQUE"):
             current = "technique"
             continue
-        if "ACHADOS" in upper or "FINDINGS" in upper:
+        if "ACHADOS" in upper or "FINDINGS" in upper or upper.startswith("LAUDO"):
             current = "findings"
             continue
         if "IMPRESSÃO" in upper or "IMPRESSAO" in upper or "IMPRESSION" in upper:
@@ -100,7 +100,14 @@ def _normalize_sections(parsed, raw_content):
     combined = "\n".join([technique, findings, impression]).strip()
     if combined:
         upper = combined.upper()
-        if "TÉCNICA" in upper or "TECNICA" in upper or "ACHADOS" in upper or "IMPRESSÃO" in upper or "IMPRESSAO" in upper:
+        if (
+            "TÉCNICA" in upper
+            or "TECNICA" in upper
+            or "ACHADOS" in upper
+            or upper.startswith("LAUDO")
+            or "IMPRESSÃO" in upper
+            or "IMPRESSAO" in upper
+        ):
             parsed_sections = _extract_sections_from_text(combined)
             if parsed_sections:
                 return parsed_sections
@@ -111,6 +118,116 @@ def _normalize_sections(parsed, raw_content):
             return parsed_sections
 
     return {"technique": technique, "findings": findings, "impression": impression}
+
+
+def _clean_inline_text(value):
+    if value is None:
+        return ""
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _build_default_technique(mode, region, contrast):
+    mode_clean = str(mode or "").strip().lower()
+    region_label = str(region or "segmento avaliado").strip().replace("_", " ")
+    contrast_clean = str(contrast or "").strip().lower()
+
+    if mode_clean == "ct":
+        if contrast_clean == "com":
+            contrast_text = "com contraste intravenoso"
+        elif contrast_clean == "misto":
+            contrast_text = "sem e com contraste intravenoso"
+        else:
+            contrast_text = "sem contraste intravenoso"
+        return (
+            "Aquisição helicoidal multislice de "
+            f"{region_label}, com cortes finos e reconstruções multiplanares, {contrast_text}."
+        )
+
+    if contrast_clean == "com":
+        contrast_text = "com gadolínio"
+    elif contrast_clean == "misto":
+        contrast_text = "sem e com gadolínio"
+    else:
+        contrast_text = "sem gadolínio"
+    return (
+        "Sequências multiplanares ponderadas em T1, T2, FLAIR e DWI de "
+        f"{region_label}, {contrast_text}."
+    )
+
+
+def _fallback_laudo_text(dictation, request_prompt):
+    pieces = []
+    if isinstance(dictation, dict):
+        if dictation.get("findings"):
+            pieces.append(_clean_inline_text(dictation.get("findings")))
+        if dictation.get("extraInfo"):
+            pieces.append(_clean_inline_text(dictation.get("extraInfo")))
+    if request_prompt:
+        pieces.append(f"Laudo elaborado conforme solicitação: {_clean_inline_text(request_prompt)}.")
+
+    combined = "\n".join([item for item in pieces if item]).strip()
+    if combined:
+        return combined
+    return "Sem alterações significativas descritas no estudo."
+
+
+def _fallback_impression_text(laudo_text, dictation):
+    if isinstance(dictation, dict) and dictation.get("impression"):
+        return _clean_inline_text(dictation.get("impression"))
+
+    clean_laudo = _clean_inline_text(laudo_text)
+    if not clean_laudo:
+        return "Sem alterações significativas."
+
+    normalized = clean_laudo.lower()
+    negative_markers = [
+        "sem alteração",
+        "sem alteracao",
+        "sem achados",
+        "sem evidência",
+        "sem evidencia",
+        "normal",
+        "sem sinais",
+    ]
+    if any(marker in normalized for marker in negative_markers):
+        return "Sem alterações significativas no estudo."
+
+    first_sentence = re.split(r"[.!?]\s+", clean_laudo, maxsplit=1)[0].strip()
+    if first_sentence:
+        return first_sentence.rstrip(".") + "."
+    return "Correlacionar com dados clínicos."
+
+
+def _ensure_required_sections(parsed_sections, raw_content, mode, region, contrast, dictation, request_prompt):
+    base = {"technique": "", "findings": "", "impression": ""}
+    if isinstance(parsed_sections, dict):
+        base["technique"] = _clean_inline_text(parsed_sections.get("technique", ""))
+        base["findings"] = _clean_inline_text(parsed_sections.get("findings", ""))
+        base["impression"] = _clean_inline_text(parsed_sections.get("impression", ""))
+
+    if not any(base.values()) and raw_content:
+        parsed_from_raw = _extract_sections_from_text(raw_content) or {}
+        base["technique"] = base["technique"] or _clean_inline_text(parsed_from_raw.get("technique", ""))
+        base["findings"] = base["findings"] or _clean_inline_text(parsed_from_raw.get("findings", ""))
+        base["impression"] = base["impression"] or _clean_inline_text(parsed_from_raw.get("impression", ""))
+
+    if not base["technique"]:
+        dictated_technique = _clean_inline_text((dictation or {}).get("technique", "")) if isinstance(dictation, dict) else ""
+        base["technique"] = dictated_technique or _build_default_technique(mode, region, contrast)
+
+    if not base["findings"]:
+        base["findings"] = _fallback_laudo_text(dictation, request_prompt)
+
+    if not base["impression"]:
+        base["impression"] = _fallback_impression_text(base["findings"], dictation)
+
+    return {
+        "technique": base["technique"] or _build_default_technique(mode, region, contrast),
+        "findings": base["findings"] or "Sem alterações significativas descritas no estudo.",
+        "impression": base["impression"] or "Sem alterações significativas.",
+    }
 
 
 def _decode_bytes_to_text(data):
@@ -651,9 +768,11 @@ def generate_report():
         system_prompt = (
             "Você é um radiologista senior experiente. Sua função é gerar laudos precisos e objetivos "
             "para as modalidades de TC e RM. Organize as frases para que o médico solicitante tenha "
-            "clareza na descrição dos achados. "
+            "clareza na descrição do laudo. "
             "Retorne APENAS um JSON válido com as chaves: technique, findings, impression. "
+            "A chave findings representa o conteúdo da seção LAUDO. "
             "Cada valor deve conter apenas o conteúdo da sua seção, sem títulos ou rótulos. "
+            "Mantenha o padrão em 3 seções: Técnica, Laudo e Impressão. "
             "A impressão deve ser coerente e derivada exclusivamente dos achados apresentados "
             "(se a impressão ditada estiver vazia ou incompleta, sintetize a partir dos achados). "
             "Evite inventar achados não mencionados; se faltar informação, use linguagem cautelosa. "
@@ -678,7 +797,7 @@ def generate_report():
             f"- Indicação clínica: {dictation.get('indication', '')}\n"
             f"- Informações adicionais: {dictation.get('extraInfo', '')}\n"
             f"- Técnica ditada: {dictation.get('technique', '')}\n"
-            f"- Achados ditados: {dictation.get('findings', '')}\n"
+            f"- Laudo ditado: {dictation.get('findings', '')}\n"
             f"- Impressão ditada: {dictation.get('impression', '')}\n\n"
             "Transforme essas frases em um laudo coeso, preservando o conteúdo dito. "
             "Se houver solicitação específica acima, priorize-a na construção do laudo."
@@ -730,13 +849,21 @@ def generate_report():
             parsed = _extract_sections_from_text(content)
 
         parsed = _normalize_sections(parsed, content)
-        if not parsed:
-            return jsonify({"error": "Resposta do modelo inválida.", "raw": content}), 502
+        enforced = _ensure_required_sections(
+            parsed_sections=parsed,
+            raw_content=content,
+            mode=mode,
+            region=region,
+            contrast=contrast,
+            dictation=dictation,
+            request_prompt=request_prompt,
+        )
 
         return jsonify({
-            "technique": parsed.get("technique", ""),
-            "findings": parsed.get("findings", ""),
-            "impression": parsed.get("impression", ""),
+            "technique": enforced.get("technique", ""),
+            "laudo": enforced.get("findings", ""),
+            "findings": enforced.get("findings", ""),  # Compatibilidade com frontend existente
+            "impression": enforced.get("impression", ""),
         })
     except requests.RequestException as exc:
         return jsonify({"error": f"Erro ao chamar modelo: {exc}"}), 502
