@@ -587,7 +587,12 @@ function extractTemplateSections(text) {
       current = "technique";
       continue;
     }
-    if (upper.includes("ACHADOS") || upper.includes("FINDINGS") || upper.includes("DESCRI")) {
+    if (
+      upper.includes("ACHADOS") ||
+      upper.includes("FINDINGS") ||
+      upper.includes("DESCRI") ||
+      upper.startsWith("LAUDO")
+    ) {
       current = "findings";
       continue;
     }
@@ -1116,8 +1121,9 @@ async function generateWithAi() {
     if (data.technique !== undefined) {
       document.getElementById("technique").value = data.technique;
     }
-    if (data.findings !== undefined) {
-      document.getElementById("findings").value = formatFindingsText(data.findings);
+    const laudoFromApi = data.laudo !== undefined ? data.laudo : data.findings;
+    if (laudoFromApi !== undefined) {
+      document.getElementById("findings").value = formatFindingsText(laudoFromApi);
     }
     if (data.impression !== undefined) {
       document.getElementById("impression").value = data.impression;
@@ -1217,7 +1223,7 @@ function buildReport() {
   const findings = valueOf("findings");
   if (findings) {
     const formattedFindings = formatFindingsText(findings);
-    lines.push("ACHADOS:");
+    lines.push("LAUDO:");
     lines.push(formattedFindings);
     lines.push("");
   }
