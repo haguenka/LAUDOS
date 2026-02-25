@@ -124,7 +124,10 @@
             <input id="aiBaseUrl" type="text" placeholder="http://localhost:1234/v1" />
           </div>
           <div class="field field-wide">
-            <label for="aiRequest">Solicitação para IA (laudo específico)</label>
+            <div class="section-header">
+              <label for="aiRequest">Solicitação para IA (laudo específico)</label>
+              <button class="mic-btn" data-target="aiRequest" data-label="Solicitação para IA">Ditado</button>
+            </div>
             <textarea
               id="aiRequest"
               rows="3"
@@ -198,8 +201,8 @@
           </div>
           <div class="section">
             <div class="section-header">
-              <h3>Achados</h3>
-              <button class="mic-btn" data-target="findings" data-label="Achados">Ditado</button>
+              <h3>Laudo</h3>
+              <button class="mic-btn" data-target="findings" data-label="Laudo">Ditado</button>
             </div>
             <textarea id="findings" rows="12"></textarea>
           </div>
