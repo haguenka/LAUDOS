@@ -132,6 +132,7 @@ const templateStatusEl = document.getElementById("templateStatus");
 const aiProviderEl = document.getElementById("aiProvider");
 const aiModelEl = document.getElementById("aiModel");
 const aiApiKeyEl = document.getElementById("aiApiKey");
+const aiRequestEl = document.getElementById("aiRequest");
 const saveApiKeyBtn = document.getElementById("saveApiKey");
 const globalKeyStatusEl = document.getElementById("globalKeyStatus");
 const aiBaseUrlEl = document.getElementById("aiBaseUrl");
@@ -1073,6 +1074,7 @@ async function generateWithAi() {
     mode: state.mode,
     region: regionSelect.value,
     contrast: contrastSelect.value,
+    requestPrompt: aiRequestEl ? aiRequestEl.value.trim() : "",
     dictation: {
       indication: valueOf("indication"),
       extraInfo: valueOf("extraInfo"),
@@ -1262,6 +1264,7 @@ function saveDraft() {
       referrer: valueOf("referrer"),
       indication: valueOf("indication"),
       extraInfo: valueOf("extraInfo"),
+      aiRequest: aiRequestEl ? aiRequestEl.value.trim() : "",
       technique: valueOf("technique"),
       findings: valueOf("findings"),
       impression: valueOf("impression"),

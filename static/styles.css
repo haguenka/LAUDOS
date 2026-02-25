@@ -374,6 +374,14 @@ h1 {
   min-width: 0;
 }
 
+.ai-controls .field-wide {
+  grid-column: 1 / -1;
+}
+
+#aiRequest {
+  min-height: 96px;
+}
+
 .model-select {
   display: flex;
   gap: 10px;
