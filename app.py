@@ -28,14 +28,52 @@ def _extract_json_block(text):
     if not text:
         return None
     cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        cleaned = cleaned.replace("json", "", 1).strip()
+
+    # 1) Tentativa direta.
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
+    # 2) Trechos dentro de fence markdown.
+    for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, flags=re.IGNORECASE):
+        fenced_content = match.group(1).strip()
+        try:
+            return json.loads(fenced_content)
+        except json.JSONDecodeError:
+            continue
+
+    # 3) Primeiro objeto JSON balanceado no texto.
+    start = cleaned.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape_next = False
+        for idx in range(start, len(cleaned)):
+            ch = cleaned[idx]
+            if in_string:
+                if escape_next:
+                    escape_next = False
+                elif ch == "\\":
+                    escape_next = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = cleaned[start : idx + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+
+    # 4) Fallback simples: do primeiro { ao último }.
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start == -1 or end == -1 or end <= start:
@@ -89,13 +127,50 @@ def _coerce_text(value):
     return str(value)
 
 
+def _extract_sections_from_dict(parsed):
+    if not isinstance(parsed, dict):
+        return None
+
+    aliases = {
+        "technique": ["technique", "tecnica", "técnica", "metodo", "método"],
+        "findings": ["findings", "laudo", "report", "descricao", "descrição", "achados", "body"],
+        "impression": ["impression", "impressao", "impressão", "conclusion", "conclusao", "conclusão"],
+    }
+
+    extracted = {"technique": "", "findings": "", "impression": ""}
+    lower_map = {str(key).strip().lower(): key for key in parsed.keys()}
+
+    for canonical_key, key_aliases in aliases.items():
+        for alias in key_aliases:
+            real_key = lower_map.get(alias.lower())
+            if real_key is not None:
+                extracted[canonical_key] = _coerce_text(parsed.get(real_key, "")).strip()
+                if extracted[canonical_key]:
+                    break
+
+    # Procura também em subobjetos comuns.
+    for nested_key in ("sections", "data", "result", "output", "response"):
+        nested = parsed.get(nested_key)
+        if isinstance(nested, dict):
+            nested_sections = _extract_sections_from_dict(nested)
+            if nested_sections:
+                for key in extracted:
+                    if not extracted[key] and nested_sections.get(key):
+                        extracted[key] = nested_sections[key]
+
+    if any(extracted.values()):
+        return extracted
+    return None
+
+
 def _normalize_sections(parsed, raw_content):
     if not isinstance(parsed, dict):
         return None
 
-    technique = _coerce_text(parsed.get("technique", "")).strip()
-    findings = _coerce_text(parsed.get("findings", "")).strip()
-    impression = _coerce_text(parsed.get("impression", "")).strip()
+    extracted = _extract_sections_from_dict(parsed) or {}
+    technique = _coerce_text(extracted.get("technique", "")).strip()
+    findings = _coerce_text(extracted.get("findings", "")).strip()
+    impression = _coerce_text(extracted.get("impression", "")).strip()
 
     combined = "\n".join([technique, findings, impression]).strip()
     if combined:
@@ -126,6 +201,20 @@ def _clean_inline_text(value):
     text = str(value).replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _is_json_like_text(text):
+    if not text:
+        return False
+    lowered = text.strip().lower()
+    return (
+        lowered.startswith("```json")
+        or (lowered.startswith("{") and lowered.endswith("}"))
+        or '"technique"' in lowered
+        or '"findings"' in lowered
+        or '"impression"' in lowered
+        or '"laudo"' in lowered
+    )
 
 
 def _build_default_technique(mode, region, contrast):
@@ -180,6 +269,8 @@ def _fallback_impression_text(laudo_text, dictation):
     clean_laudo = _clean_inline_text(laudo_text)
     if not clean_laudo:
         return "Sem alterações significativas."
+    if _is_json_like_text(clean_laudo):
+        return "Correlacionar com dados clínicos e com o conteúdo do laudo."
 
     normalized = clean_laudo.lower()
     negative_markers = [
@@ -206,6 +297,20 @@ def _ensure_required_sections(parsed_sections, raw_content, mode, region, contra
         base["technique"] = _clean_inline_text(parsed_sections.get("technique", ""))
         base["findings"] = _clean_inline_text(parsed_sections.get("findings", ""))
         base["impression"] = _clean_inline_text(parsed_sections.get("impression", ""))
+
+    # Se alguma seção vier com JSON bruto, tenta reprocessar para extrair os campos corretos.
+    for candidate_key in ("findings", "impression", "technique"):
+        candidate_value = base.get(candidate_key, "")
+        if candidate_value and _is_json_like_text(candidate_value):
+            embedded = _extract_json_block(candidate_value)
+            embedded_norm = _normalize_sections(embedded, candidate_value) if embedded else None
+            if embedded_norm:
+                if embedded_norm.get("technique"):
+                    base["technique"] = _clean_inline_text(embedded_norm.get("technique"))
+                if embedded_norm.get("findings"):
+                    base["findings"] = _clean_inline_text(embedded_norm.get("findings"))
+                if embedded_norm.get("impression"):
+                    base["impression"] = _clean_inline_text(embedded_norm.get("impression"))
 
     if not any(base.values()) and raw_content:
         parsed_from_raw = _extract_sections_from_text(raw_content) or {}
