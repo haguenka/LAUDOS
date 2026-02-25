@@ -123,6 +123,14 @@
             <label for="aiBaseUrl">Base URL</label>
             <input id="aiBaseUrl" type="text" placeholder="http://localhost:1234/v1" />
           </div>
+          <div class="field field-wide">
+            <label for="aiRequest">Solicitação para IA (laudo específico)</label>
+            <textarea
+              id="aiRequest"
+              rows="3"
+              placeholder='Ex: "Crie um laudo padrão de ressonância de crânio para adulto jovem" ou "Crie um laudo de tomografia de crânio para AVC".'
+            ></textarea>
+          </div>
         </div>
         <p class="toolbar-hint">
           Dica: no LM Studio, use o endpoint OpenAI compatível. Para API externa, informe a URL e a key.
