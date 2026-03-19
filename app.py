@@ -1,4 +1,4 @@
-﻿from flask import Flask, render_template, request, jsonify
+﻿from flask import Flask, render_template, request, jsonify, send_file
 import io
 import json
 import os
@@ -12,10 +12,14 @@ import uuid
 import zipfile
 import unicodedata
 from datetime import datetime, timezone
+from html import escape
 from xml.etree import ElementTree
 
 app = Flask(__name__)
-TEMPLATE_DB_PATH = os.getenv("TEMPLATE_DB_PATH", os.path.join(app.root_path, "templates.db"))
+TEMPLATE_DB_PATH = os.getenv(
+    "APP_DB_PATH",
+    os.getenv("TEMPLATE_DB_PATH", os.path.join(app.root_path, "templates.db")),
+)
 ALLOWED_TEMPLATE_MODES = {"ct", "mri"}
 ALLOWED_TEMPLATE_REGIONS = {
     "cranio",
@@ -29,6 +33,7 @@ ALLOWED_TEMPLATE_REGIONS = {
     "vascular",
 }
 API_KEY_PROVIDERS = {"openai", "gemini"}
+REPORT_CONTRAST_OPTIONS = {"sem", "com", "misto"}
 
 
 @app.route("/")
@@ -836,6 +841,9 @@ def _extract_template_text(filename, content):
 
 
 def _db_connect():
+    db_dir = os.path.dirname(TEMPLATE_DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     conn = sqlite3.connect(TEMPLATE_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -871,6 +879,38 @@ def _init_templates_db():
                 updated_at TEXT NOT NULL
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+                id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                region TEXT NOT NULL,
+                contrast TEXT NOT NULL DEFAULT 'sem',
+                status TEXT NOT NULL DEFAULT 'finalized',
+                patient_name TEXT NOT NULL DEFAULT '',
+                patient_id TEXT NOT NULL DEFAULT '',
+                patient_age TEXT NOT NULL DEFAULT '',
+                patient_sex TEXT NOT NULL DEFAULT '',
+                study_date TEXT NOT NULL DEFAULT '',
+                referrer TEXT NOT NULL DEFAULT '',
+                indication TEXT NOT NULL DEFAULT '',
+                extra_info TEXT NOT NULL DEFAULT '',
+                technique TEXT NOT NULL DEFAULT '',
+                findings TEXT NOT NULL DEFAULT '',
+                impression TEXT NOT NULL DEFAULT '',
+                final_text TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reports_updated_at ON reports (updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reports_patient_id ON reports (patient_id)"
         )
 
 
@@ -934,6 +974,348 @@ def _now_iso_utc():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _ui_region_label(region):
+    labels = {
+        "cranio": "Crânio",
+        "pescoco": "Pescoço",
+        "torax": "Tórax",
+        "abdomen": "Abdome",
+        "abdome_pelve": "Abdome e pelve",
+        "coluna": "Coluna",
+        "pelve": "Pelve",
+        "osteo": "Ósteoarticular",
+        "vascular": "Vascular",
+    }
+    return labels.get(_normalize_region(region), str(region or "Segmento avaliado").replace("_", " ").title())
+
+
+def _contrast_label(mode, contrast):
+    mode_clean = _normalize_mode(mode) or "ct"
+    contrast_clean = str(contrast or "sem").strip().lower()
+    if contrast_clean not in REPORT_CONTRAST_OPTIONS:
+        contrast_clean = "sem"
+    if mode_clean == "ct":
+        if contrast_clean == "com":
+            return "Com contraste intravenoso"
+        if contrast_clean == "misto":
+            return "Sem e com contraste intravenoso"
+        return "Sem contraste intravenoso"
+    if contrast_clean == "com":
+        return "Com gadolínio"
+    if contrast_clean == "misto":
+        return "Sem e com gadolínio"
+    return "Sem gadolínio"
+
+
+def _coerce_payload_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return "\n".join(str(item) for item in value if item is not None).strip()
+    return str(value).strip()
+
+
+def _compose_report_text(mode, region, contrast, fields):
+    lines = []
+    mode_clean = _normalize_mode(mode) or "ct"
+    region_clean = _normalize_region(region) or "cranio"
+    mode_label = "TOMOGRAFIA COMPUTADORIZADA" if mode_clean == "ct" else "RESSONÂNCIA MAGNÉTICA"
+    region_label = _ui_region_label(region_clean)
+    contrast_label = _contrast_label(mode_clean, contrast)
+
+    patient_name = _coerce_payload_text(fields.get("patientName"))
+    patient_id = _coerce_payload_text(fields.get("patientId"))
+    patient_age = _coerce_payload_text(fields.get("patientAge"))
+    patient_sex = _coerce_payload_text(fields.get("patientSex"))
+    study_date = _coerce_payload_text(fields.get("studyDate"))
+    referrer = _coerce_payload_text(fields.get("referrer"))
+    indication = _coerce_payload_text(fields.get("indication"))
+    extra_info = _coerce_payload_text(fields.get("extraInfo"))
+    technique = _coerce_payload_text(fields.get("technique"))
+    findings = _coerce_payload_text(fields.get("findings"))
+    impression = _coerce_payload_text(fields.get("impression"))
+
+    lines.append(mode_label)
+    lines.append("")
+    if patient_name:
+        lines.append(f"Paciente: {patient_name}")
+    if patient_id:
+        lines.append(f"ID: {patient_id}")
+    if patient_age or patient_sex:
+        pieces = []
+        if patient_age:
+            pieces.append(f"Idade: {patient_age}")
+        if patient_sex:
+            pieces.append(f"Sexo: {patient_sex}")
+        lines.append(" | ".join(pieces))
+    if study_date:
+        lines.append(f"Data do exame: {study_date}")
+    if referrer:
+        lines.append(f"Solicitante: {referrer}")
+    lines.append(f"Modalidade: {'Tomografia' if mode_clean == 'ct' else 'Ressonância'}")
+    lines.append(f"Região: {region_label}")
+    lines.append(f"Contraste: {contrast_label}")
+    lines.append("")
+    if indication:
+        lines.extend(["INDICAÇÃO CLÍNICA:", indication, ""])
+    if extra_info:
+        lines.extend(["INFORMAÇÕES ADICIONAIS:", extra_info, ""])
+    if technique:
+        lines.extend(["TÉCNICA:", technique, ""])
+    if findings:
+        lines.extend(["LAUDO:", findings, ""])
+    if impression:
+        lines.extend(["IMPRESSÃO:", impression, ""])
+    lines.extend(["----", "Assinatura: ________________________________________"])
+    return "\n".join(lines).strip()
+
+
+def _clean_report_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("Payload inválido para laudo.")
+
+    fields = payload.get("fields") or {}
+    if not isinstance(fields, dict):
+        fields = {}
+
+    mode = _normalize_mode(payload.get("mode")) or "ct"
+    region = _normalize_region(payload.get("region")) or "cranio"
+    contrast = str(payload.get("contrast", "sem")).strip().lower()
+    if contrast not in REPORT_CONTRAST_OPTIONS:
+        contrast = "sem"
+
+    report_id = str(payload.get("id", "") or "").strip()
+    status = str(payload.get("status", "finalized") or "finalized").strip().lower() or "finalized"
+
+    clean_fields = {
+        "patientName": _coerce_payload_text(fields.get("patientName")),
+        "patientId": _coerce_payload_text(fields.get("patientId")),
+        "patientAge": _coerce_payload_text(fields.get("patientAge")),
+        "patientSex": _coerce_payload_text(fields.get("patientSex")),
+        "studyDate": _coerce_payload_text(fields.get("studyDate")),
+        "referrer": _coerce_payload_text(fields.get("referrer")),
+        "indication": _coerce_payload_text(fields.get("indication")),
+        "extraInfo": _coerce_payload_text(fields.get("extraInfo")),
+        "aiRequest": _coerce_payload_text(fields.get("aiRequest")),
+        "technique": _coerce_payload_text(fields.get("technique")),
+        "findings": _coerce_payload_text(fields.get("findings")),
+        "impression": _coerce_payload_text(fields.get("impression")),
+    }
+    final_text = _coerce_payload_text(payload.get("finalText"))
+    if not final_text:
+        final_text = _compose_report_text(mode, region, contrast, clean_fields)
+    if not final_text:
+        raise ValueError("O laudo final está vazio.")
+
+    return {
+        "id": report_id,
+        "mode": mode,
+        "region": region,
+        "contrast": contrast,
+        "status": status,
+        "fields": clean_fields,
+        "final_text": final_text,
+        "payload_json": json.dumps(
+            {
+                "mode": mode,
+                "region": region,
+                "contrast": contrast,
+                "status": status,
+                "fields": clean_fields,
+                "finalText": final_text,
+            },
+            ensure_ascii=False,
+        ),
+    }
+
+
+def _report_row_to_json(row):
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    fields = payload.get("fields") if isinstance(payload, dict) else {}
+    if not isinstance(fields, dict):
+        fields = {}
+    fields = {
+        "patientName": _coerce_payload_text(fields.get("patientName") or row["patient_name"]),
+        "patientId": _coerce_payload_text(fields.get("patientId") or row["patient_id"]),
+        "patientAge": _coerce_payload_text(fields.get("patientAge") or row["patient_age"]),
+        "patientSex": _coerce_payload_text(fields.get("patientSex") or row["patient_sex"]),
+        "studyDate": _coerce_payload_text(fields.get("studyDate") or row["study_date"]),
+        "referrer": _coerce_payload_text(fields.get("referrer") or row["referrer"]),
+        "indication": _coerce_payload_text(fields.get("indication") or row["indication"]),
+        "extraInfo": _coerce_payload_text(fields.get("extraInfo") or row["extra_info"]),
+        "aiRequest": _coerce_payload_text(fields.get("aiRequest")),
+        "technique": _coerce_payload_text(fields.get("technique") or row["technique"]),
+        "findings": _coerce_payload_text(fields.get("findings") or row["findings"]),
+        "impression": _coerce_payload_text(fields.get("impression") or row["impression"]),
+    }
+    return {
+        "id": row["id"],
+        "mode": row["mode"],
+        "region": row["region"],
+        "regionLabel": _ui_region_label(row["region"]),
+        "contrast": row["contrast"],
+        "contrastLabel": _contrast_label(row["mode"], row["contrast"]),
+        "status": row["status"],
+        "fields": fields,
+        "finalText": row["final_text"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _upsert_report_with_connection(conn, payload):
+    item = _clean_report_payload(payload)
+    now = _now_iso_utc()
+    report_id = item["id"] or str(uuid.uuid4())
+    existing = conn.execute("SELECT id, created_at FROM reports WHERE id = ?", (report_id,)).fetchone()
+    created_at = existing["created_at"] if existing else now
+
+    conn.execute(
+        """
+        INSERT INTO reports (
+            id,
+            mode,
+            region,
+            contrast,
+            status,
+            patient_name,
+            patient_id,
+            patient_age,
+            patient_sex,
+            study_date,
+            referrer,
+            indication,
+            extra_info,
+            technique,
+            findings,
+            impression,
+            final_text,
+            payload_json,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            mode = excluded.mode,
+            region = excluded.region,
+            contrast = excluded.contrast,
+            status = excluded.status,
+            patient_name = excluded.patient_name,
+            patient_id = excluded.patient_id,
+            patient_age = excluded.patient_age,
+            patient_sex = excluded.patient_sex,
+            study_date = excluded.study_date,
+            referrer = excluded.referrer,
+            indication = excluded.indication,
+            extra_info = excluded.extra_info,
+            technique = excluded.technique,
+            findings = excluded.findings,
+            impression = excluded.impression,
+            final_text = excluded.final_text,
+            payload_json = excluded.payload_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            report_id,
+            item["mode"],
+            item["region"],
+            item["contrast"],
+            item["status"],
+            item["fields"]["patientName"],
+            item["fields"]["patientId"],
+            item["fields"]["patientAge"],
+            item["fields"]["patientSex"],
+            item["fields"]["studyDate"],
+            item["fields"]["referrer"],
+            item["fields"]["indication"],
+            item["fields"]["extraInfo"],
+            item["fields"]["technique"],
+            item["fields"]["findings"],
+            item["fields"]["impression"],
+            item["final_text"],
+            item["payload_json"],
+            created_at,
+            now,
+        ),
+    )
+    row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+    return _report_row_to_json(row), existing is None
+
+
+def _slugify_filename(value):
+    slug = _strip_accents(value).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
+    return slug or "laudo-radiologia"
+
+
+def _report_filename(payload):
+    if not isinstance(payload, dict):
+        return "laudo-radiologia.pdf"
+    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+    patient_name = _coerce_payload_text(fields.get("patientName"))
+    study_date = _coerce_payload_text(fields.get("studyDate"))
+    base_name = patient_name or f"{_normalize_mode(payload.get('mode')) or 'ct'}-{_normalize_region(payload.get('region')) or 'cranio'}"
+    if study_date:
+        return f"{_slugify_filename(base_name)}-{_slugify_filename(study_date)}.pdf"
+    return f"{_slugify_filename(base_name)}.pdf"
+
+
+def _build_report_pdf_bytes(payload):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+    item = _clean_report_payload(payload)
+    buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+        title="Laudo Radiológico",
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=13,
+        leading=16,
+        spaceAfter=8,
+    )
+    body_style = ParagraphStyle(
+        "ReportBody",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=10.5,
+        leading=14,
+        spaceAfter=6,
+    )
+
+    story = []
+    blocks = re.split(r"\n\s*\n", item["final_text"])
+    for index, block in enumerate(blocks):
+        safe_block = escape(block).replace("\n", "<br/>")
+        if not safe_block.strip():
+            continue
+        style = title_style if index == 0 else body_style
+        story.append(Paragraph(safe_block, style))
+        if index < len(blocks) - 1:
+            story.append(Spacer(1, 2))
+
+    document.build(story)
+    buffer.seek(0)
+    return buffer
+
+
 def _normalize_provider(provider):
     return str(provider or "").strip().lower()
 
@@ -989,6 +1371,69 @@ def _global_api_key_status():
         "openaiConfigured": "openai" in providers,
         "geminiConfigured": "gemini" in providers,
     }
+
+
+def _default_models_for_provider(provider):
+    if provider == "openai":
+        return ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o"]
+    if provider == "gemini":
+        return ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
+    return []
+
+
+def _extract_provider_error(payload):
+    if not isinstance(payload, dict):
+        return {}
+    err = payload.get("error")
+    return err if isinstance(err, dict) else {}
+
+
+def _requires_responses_api(error_payload):
+    err = _extract_provider_error(error_payload)
+    message = str(err.get("message", "") or "").lower()
+    code = str(err.get("code", "") or "").lower()
+    return (
+        ("v1/responses" in message and "chat/completions" in message)
+        or code == "unsupported_model"
+        or "only supported in v1/responses" in message
+    )
+
+
+def _extract_content_from_responses_api(payload):
+    if not isinstance(payload, dict):
+        return ""
+
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    output = payload.get("output")
+    collected = []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type", "") or "").strip().lower()
+                if part_type not in ("output_text", "text"):
+                    continue
+                text_value = part.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    collected.append(text_value.strip())
+                    continue
+                if isinstance(text_value, dict):
+                    nested = text_value.get("value")
+                    if isinstance(nested, str) and nested.strip():
+                        collected.append(nested.strip())
+
+    if collected:
+        return "\n".join(collected).strip()
+    return ""
 
 
 def _upsert_template_with_connection(conn, payload):
@@ -1149,6 +1594,63 @@ def save_templates_bulk():
         return jsonify({"error": f"Erro ao salvar templates em lote: {exc}"}), 500
 
 
+@app.route("/reports", methods=["GET"])
+def list_reports():
+    try:
+        raw_limit = request.args.get("limit", "20")
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            limit = 20
+        limit = max(1, min(limit, 100))
+
+        with _db_connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM reports
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return jsonify({"reports": [_report_row_to_json(row) for row in rows]})
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao listar laudos: {exc}"}), 500
+
+
+@app.route("/reports", methods=["POST"])
+def save_report():
+    data = request.get_json(silent=True) or {}
+    try:
+        with _db_connect() as conn:
+            report, created = _upsert_report_with_connection(conn, data)
+        return jsonify({"report": report, "created": created})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao salvar laudo: {exc}"}), 500
+
+
+@app.route("/reports/export-pdf", methods=["POST"])
+def export_report_pdf():
+    data = request.get_json(silent=True) or {}
+    try:
+        pdf_buffer = _build_report_pdf_bytes(data)
+        filename = _report_filename(data)
+        return send_file(
+            pdf_buffer,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=filename,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao preparar PDF: {exc}"}), 500
+    except Exception as exc:
+        return jsonify({"error": f"Erro ao gerar PDF: {exc}"}), 500
+
+
 @app.route("/api-keys", methods=["POST"])
 def save_global_api_key():
     data = request.get_json(silent=True) or {}
@@ -1251,7 +1753,9 @@ def generate_report():
             "Se houver solicitação específica acima, priorize-a na construção do laudo."
         )
 
-        url = base_url.rstrip("/") + "/chat/completions"
+        base_clean = base_url.rstrip("/")
+        url = base_clean + "/chat/completions"
+        responses_url = base_clean + "/responses"
         headers = {"Content-Type": "application/json"}
         if api_key:
             if provider == "gemini":
@@ -1273,6 +1777,7 @@ def generate_report():
             body["max_tokens"] = 900
 
         response = requests.post(url, headers=headers, json=body, timeout=90)
+        response_mode = "chat_completions"
         if response.status_code == 400:
             retry_body = None
             try:
@@ -1303,6 +1808,51 @@ def generate_report():
             if retry_body is not None:
                 response = requests.post(url, headers=headers, json=retry_body, timeout=90)
 
+        # Modelos mais novos da OpenAI (ex.: GPT-5.x) podem exigir o endpoint /responses.
+        if provider == "openai" and not response.ok:
+            try:
+                chat_error_payload = response.json()
+            except ValueError:
+                chat_error_payload = {}
+
+            if _requires_responses_api(chat_error_payload):
+                responses_body = {
+                    "model": model,
+                    "input": [
+                        {
+                            "role": "system",
+                            "content": [{"type": "input_text", "text": system_prompt}],
+                        },
+                        {
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": user_prompt}],
+                        },
+                    ],
+                    "max_output_tokens": 900,
+                    "temperature": 0.2,
+                }
+                response = requests.post(responses_url, headers=headers, json=responses_body, timeout=90)
+                response_mode = "responses"
+
+                if response.status_code == 400:
+                    retry_responses_body = None
+                    try:
+                        responses_error_payload = response.json()
+                    except ValueError:
+                        responses_error_payload = {}
+                    responses_error = _extract_provider_error(responses_error_payload)
+                    param_name = str(responses_error.get("param", "") or "").strip().lower()
+                    message = str(responses_error.get("message", "") or "").lower()
+                    if param_name == "temperature" or ("unsupported parameter" in message and "temperature" in message):
+                        retry_responses_body = dict(responses_body)
+                        retry_responses_body.pop("temperature", None)
+                    elif param_name == "max_output_tokens" or ("unsupported parameter" in message and "max_output_tokens" in message):
+                        retry_responses_body = dict(responses_body)
+                        retry_responses_body.pop("max_output_tokens", None)
+
+                    if retry_responses_body is not None:
+                        response = requests.post(responses_url, headers=headers, json=retry_responses_body, timeout=90)
+
         if not response.ok:
             detail = ""
             try:
@@ -1320,10 +1870,13 @@ def generate_report():
 
         data_out = response.json()
         content = ""
-        try:
-            content = data_out["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
-            content = ""
+        if response_mode == "responses":
+            content = _extract_content_from_responses_api(data_out)
+        else:
+            try:
+                content = data_out["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError):
+                content = ""
 
         parsed = _extract_json_block(content)
         if not parsed:
@@ -1382,6 +1935,7 @@ def list_models():
 
     payload = None
     used_url = ""
+    last_error = None
     base_clean = base_url.rstrip("/")
     model_urls = []
     if provider == "lmstudio" and loaded_only:
@@ -1395,9 +1949,20 @@ def list_models():
     for url in model_urls:
         try:
             response = requests.get(url, headers=headers, timeout=30)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            last_error = {"status": "network", "detail": str(exc)}
             continue
         if not response.ok:
+            detail = ""
+            try:
+                err_payload = response.json()
+                if isinstance(err_payload, dict) and "error" in err_payload:
+                    detail = err_payload["error"]
+                else:
+                    detail = err_payload
+            except ValueError:
+                detail = response.text[:400]
+            last_error = {"status": response.status_code, "detail": detail}
             continue
         try:
             payload = response.json()
@@ -1405,10 +1970,20 @@ def list_models():
                 used_url = url
                 break
         except ValueError:
+            last_error = {"status": response.status_code, "detail": "Resposta não JSON do provedor."}
             continue
 
     if payload is None:
-        return jsonify({"error": "Resposta inválida ao listar modelos."}), 502
+        fallback_models = _default_models_for_provider(provider)
+        if fallback_models:
+            warning = "Não foi possível listar modelos em tempo real; usando lista padrão."
+            if last_error:
+                warning += f" Detalhe: {last_error.get('detail')}"
+            return jsonify({"models": fallback_models, "warning": warning})
+        return jsonify({
+            "error": "Resposta inválida ao listar modelos.",
+            "detail": last_error.get("detail") if isinstance(last_error, dict) else "",
+        }), 502
 
     models = []
     data_list = None
@@ -1462,8 +2037,9 @@ def list_models():
     warning = ""
     if not models and provider == "lmstudio" and loaded_only:
         warning = "Nenhum modelo carregado detectado no LM Studio."
-    if not models and provider == "gemini":
-        models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
+    if not models and provider in ("openai", "gemini"):
+        models = _default_models_for_provider(provider)
+        warning = warning or "Não foi possível listar modelos em tempo real; usando lista padrão."
     models = sorted(set([m for m in models if m]))
     response = {"models": models}
     if warning:
