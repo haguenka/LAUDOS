@@ -1535,9 +1535,32 @@ def _default_exam_title(mode, region):
     )
 
 
+def _normalize_exam_title_for_report(raw_title, mode, region):
+    default_title = _default_exam_title(mode, region)
+    clean_title = _coerce_payload_text(raw_title)
+    if not clean_title:
+        return default_title
+
+    normalized_input = _strip_accents(clean_title).lower()
+    normalized_default = _strip_accents(default_title).lower()
+    normalized_region = _strip_accents(_ui_region_label(region)).lower()
+    generic_candidates = {
+        normalized_default,
+        f"tc {normalized_region}",
+        f"rm {normalized_region}",
+        f"tomografia {normalized_region}",
+        f"tomografia computadorizada {normalized_region}",
+        f"ressonancia {normalized_region}",
+        f"ressonancia magnetica {normalized_region}",
+    }
+    if normalized_input in generic_candidates:
+        return default_title
+    return clean_title.upper()
+
+
 def _compose_report_text(mode, region, contrast, fields):
     lines = []
-    exam_title = _coerce_payload_text(fields.get("examTitle")) or _default_exam_title(mode, region)
+    exam_title = _normalize_exam_title_for_report(fields.get("examTitle"), mode, region)
     patient_name = _coerce_payload_text(fields.get("patientName"))
     patient_id = _coerce_payload_text(fields.get("patientId"))
     patient_age = _calculate_age_text(fields.get("patientBirthDate"), fields.get("studyDate")) or _coerce_payload_text(fields.get("patientAge"))
@@ -1608,7 +1631,7 @@ def _clean_report_payload(payload, current_user=None):
     status = str(payload.get("status", "finalized") or "finalized").strip().lower() or "finalized"
 
     clean_fields = {
-        "examTitle": _coerce_payload_text(fields.get("examTitle")),
+        "examTitle": _normalize_exam_title_for_report(fields.get("examTitle"), mode, region),
         "patientName": _coerce_payload_text(fields.get("patientName")),
         "patientId": _coerce_payload_text(fields.get("patientId")),
         "patientAge": _coerce_payload_text(fields.get("patientAge")),
