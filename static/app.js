@@ -511,6 +511,44 @@ function getContrastLabel(mode, contrastKey) {
   return "Sem gadolínio";
 }
 
+function formatDisplayDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) {
+    return `${iso[3]}/${iso[2]}/${iso[1]}`;
+  }
+  return raw;
+}
+
+function buildExamTitle(mode, regionKey) {
+  const titles = {
+    ct: {
+      cranio: "TOMOGRAFIA COMPUTADORIZADA DO CRÂNIO",
+      pescoco: "TOMOGRAFIA COMPUTADORIZADA DO PESCOÇO",
+      torax: "TOMOGRAFIA COMPUTADORIZADA DO TÓRAX",
+      abdomen: "TOMOGRAFIA COMPUTADORIZADA DO ABDOME",
+      abdome_pelve: "TOMOGRAFIA COMPUTADORIZADA DE ABDOME E PELVE",
+      coluna: "TOMOGRAFIA COMPUTADORIZADA DA COLUNA",
+      pelve: "TOMOGRAFIA COMPUTADORIZADA DA PELVE",
+      osteo: "TOMOGRAFIA COMPUTADORIZADA DO SEGMENTO ÓSTEO-ARTICULAR",
+      vascular: "TOMOGRAFIA COMPUTADORIZADA VASCULAR",
+    },
+    mri: {
+      cranio: "RESSONÂNCIA MAGNÉTICA DO CRÂNIO",
+      pescoco: "RESSONÂNCIA MAGNÉTICA DO PESCOÇO",
+      torax: "RESSONÂNCIA MAGNÉTICA DO TÓRAX",
+      abdomen: "RESSONÂNCIA MAGNÉTICA DO ABDOME",
+      abdome_pelve: "RESSONÂNCIA MAGNÉTICA DE ABDOME E PELVE",
+      coluna: "RESSONÂNCIA MAGNÉTICA DA COLUNA",
+      pelve: "RESSONÂNCIA MAGNÉTICA DA PELVE",
+      osteo: "RESSONÂNCIA MAGNÉTICA DO SEGMENTO ÓSTEO-ARTICULAR",
+      vascular: "RESSONÂNCIA MAGNÉTICA VASCULAR",
+    },
+  };
+  return (titles[mode] && titles[mode][regionKey]) || `${mode === "ct" ? "TOMOGRAFIA COMPUTADORIZADA" : "RESSONÂNCIA MAGNÉTICA"} ${regionLabels[regionKey] || ""}`.trim();
+}
+
 function buildTechnique(mode, regionKey, contrastKey) {
   const regionLabel = (regionLabels[regionKey] || regionKey).toLowerCase();
   const contrastLabel = getContrastLabel(mode, contrastKey).toLowerCase();
@@ -598,6 +636,8 @@ function extractTemplateSections(text) {
     if (
       upper.includes("ACHADOS") ||
       upper.includes("FINDINGS") ||
+      upper.includes("ANÁLISE") ||
+      upper.includes("ANALISE") ||
       upper.includes("DESCRI") ||
       upper.startsWith("LAUDO")
     ) {
@@ -640,7 +680,7 @@ function buildTemplateTextFromForm() {
     parts.push("");
   }
   if (findings) {
-    parts.push("LAUDO:");
+    parts.push("ANÁLISE:");
     parts.push(formatFindingsText(findings));
     parts.push("");
   }
@@ -1204,6 +1244,11 @@ function valueOf(id) {
   return document.getElementById(id).value.trim();
 }
 
+function checkedOf(id) {
+  const field = document.getElementById(id);
+  return !!(field && "checked" in field && field.checked);
+}
+
 function tryParseJsonFromText(value) {
   if (!value || typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -1340,76 +1385,65 @@ function formatFindingsText(text) {
 
 function buildReport() {
   const lines = [];
-  const modeLabel = state.mode === "ct" ? "TOMOGRAFIA COMPUTADORIZADA" : "RESSONÂNCIA MAGNÉTICA";
-  const regionLabel = regionLabels[regionSelect.value] || regionSelect.value;
-  const contrastLabel = getContrastLabel(state.mode, contrastSelect.value);
-
-  lines.push(modeLabel);
-  lines.push("");
-
+  const examTitle = valueOf("examTitle") || buildExamTitle(state.mode, regionSelect.value);
   const patientName = valueOf("patientName");
   const patientId = valueOf("patientId");
   const patientAge = valueOf("patientAge");
-  const patientSex = valueOf("patientSex");
-  const studyDate = valueOf("studyDate");
+  const studyDate = formatDisplayDate(valueOf("studyDate"));
+  const birthDate = formatDisplayDate(valueOf("patientBirthDate"));
   const referrer = valueOf("referrer");
+  const indication = valueOf("indication");
+  const extraInfo = valueOf("extraInfo");
+  const technique = valueOf("technique");
+  const findings = valueOf("findings");
+  const impression = valueOf("impression");
+  const radiologistName = valueOf("radiologistName");
+  const radiologistCrm = valueOf("radiologistCrm");
+  const radiologistRole = valueOf("radiologistRole");
+  const electronicSignature = checkedOf("electronicSignature");
 
-  if (patientName) lines.push("Paciente: " + patientName);
-  if (patientId) lines.push("ID: " + patientId);
-
-  if (patientAge || patientSex) {
-    const parts = [];
-    if (patientAge) parts.push("Idade: " + patientAge);
-    if (patientSex) parts.push("Sexo: " + patientSex);
-    lines.push(parts.join(" | "));
-  }
-
-  if (studyDate) lines.push("Data do exame: " + studyDate);
-  if (referrer) lines.push("Solicitante: " + referrer);
-
-  lines.push("Modalidade: " + (state.mode === "ct" ? "Tomografia" : "Ressonância"));
-  lines.push("Região: " + regionLabel);
-  lines.push("Contraste: " + contrastLabel);
+  lines.push(examTitle);
   lines.push("");
 
-  const indication = valueOf("indication");
+  if (patientName) lines.push("Paciente: " + patientName);
+  if (studyDate) lines.push("Data do Exame: " + studyDate);
+  if (referrer) lines.push("Médico solicitante: " + referrer);
+  if (patientId) lines.push("Same: " + patientId);
+  if (patientAge) lines.push("Idade: " + patientAge);
+  if (birthDate) lines.push("Data de Nascimento: " + birthDate);
+  lines.push("");
+
   if (indication) {
     lines.push("INDICAÇÃO CLÍNICA:");
     lines.push(indication);
     lines.push("");
   }
-
-  const extraInfo = valueOf("extraInfo");
   if (extraInfo) {
     lines.push("INFORMAÇÕES ADICIONAIS:");
     lines.push(extraInfo);
     lines.push("");
   }
-
-  const technique = valueOf("technique");
   if (technique) {
-    lines.push("TÉCNICA:");
+    lines.push("Técnica:");
     lines.push(technique);
     lines.push("");
   }
-
-  const findings = valueOf("findings");
   if (findings) {
-    const formattedFindings = formatFindingsText(findings);
-    lines.push("LAUDO:");
-    lines.push(formattedFindings);
+    lines.push("Análise:");
+    lines.push(formatFindingsText(findings));
     lines.push("");
   }
-
-  const impression = valueOf("impression");
   if (impression) {
-    lines.push("IMPRESSÃO:");
+    lines.push("Impressão diagnóstica:");
     lines.push(impression);
     lines.push("");
   }
-
-  lines.push("----");
-  lines.push("Assinatura: ________________________________________");
+  if (radiologistName || radiologistCrm) {
+    lines.push(electronicSignature ? "Assinatura eletrônica:" : "Radiologista responsável:");
+    if (radiologistName) lines.push(`Dr(a).: ${radiologistName}`);
+    if (radiologistRole) lines.push(radiologistRole);
+    if (radiologistCrm) lines.push(`CRM ${radiologistCrm}`);
+  }
 
   return lines.join("\n");
 }
@@ -1429,12 +1463,18 @@ function collectReportPayload(existingId = "") {
     status: "finalized",
     finalText: ensureReport(),
     fields: {
+      examTitle: valueOf("examTitle"),
       patientName: valueOf("patientName"),
       patientId: valueOf("patientId"),
       patientAge: valueOf("patientAge"),
       patientSex: valueOf("patientSex"),
       studyDate: valueOf("studyDate"),
+      patientBirthDate: valueOf("patientBirthDate"),
       referrer: valueOf("referrer"),
+      radiologistName: valueOf("radiologistName"),
+      radiologistCrm: valueOf("radiologistCrm"),
+      radiologistRole: valueOf("radiologistRole"),
+      electronicSignature: checkedOf("electronicSignature"),
       indication: valueOf("indication"),
       extraInfo: valueOf("extraInfo"),
       aiRequest: aiRequestEl ? aiRequestEl.value.trim() : "",
@@ -1479,7 +1519,7 @@ function formatSavedReportMeta(report) {
   if (report && report.contrastLabel) parts.push(report.contrastLabel);
   const studyDate =
     report && report.fields && typeof report.fields.studyDate === "string"
-      ? report.fields.studyDate.trim()
+      ? formatDisplayDate(report.fields.studyDate.trim())
       : "";
   if (studyDate) parts.push(studyDate);
   return parts.join(" | ");
@@ -1497,7 +1537,12 @@ function populateFormFromSavedReport(report) {
   const fields = report.fields || {};
   Object.keys(fields).forEach((key) => {
     const el = document.getElementById(key);
-    if (el) el.value = fields[key] || "";
+    if (!el) return;
+    if (el instanceof HTMLInputElement && el.type === "checkbox") {
+      el.checked = !!fields[key];
+      return;
+    }
+    el.value = fields[key] || "";
   });
 
   ensureReport();
@@ -1523,7 +1568,12 @@ function renderSavedReports() {
       report && report.fields && typeof report.fields.patientName === "string"
         ? report.fields.patientName.trim()
         : "";
-    title.textContent = patientName || `${report.mode === "mri" ? "RM" : "TC"} ${report.regionLabel || ""}`.trim();
+    const examTitle =
+      report && report.fields && typeof report.fields.examTitle === "string"
+        ? report.fields.examTitle.trim()
+        : "";
+    title.textContent =
+      patientName || examTitle || `${report.mode === "mri" ? "RM" : "TC"} ${report.regionLabel || ""}`.trim();
 
     const meta = document.createElement("p");
     meta.className = "saved-report-meta";
@@ -1638,9 +1688,17 @@ async function downloadReportPdf(payload = null) {
 function clearForm() {
   const inputs = document.querySelectorAll("input, textarea");
   inputs.forEach((input) => {
+    if (input instanceof HTMLInputElement && input.type === "checkbox") {
+      input.checked = false;
+      return;
+    }
     input.value = "";
   });
   document.getElementById("patientSex").value = "";
+  const electronicSignatureEl = document.getElementById("electronicSignature");
+  if (electronicSignatureEl instanceof HTMLInputElement) {
+    electronicSignatureEl.checked = true;
+  }
   reportOutputEl.textContent = "Seu laudo aparecerá aqui.";
   state.currentReportId = "";
 }
@@ -1651,12 +1709,18 @@ function saveDraft() {
     region: regionSelect.value,
     contrast: contrastSelect.value,
     fields: {
+      examTitle: valueOf("examTitle"),
       patientName: valueOf("patientName"),
       patientId: valueOf("patientId"),
       patientAge: valueOf("patientAge"),
       patientSex: valueOf("patientSex"),
       studyDate: valueOf("studyDate"),
+      patientBirthDate: valueOf("patientBirthDate"),
       referrer: valueOf("referrer"),
+      radiologistName: valueOf("radiologistName"),
+      radiologistCrm: valueOf("radiologistCrm"),
+      radiologistRole: valueOf("radiologistRole"),
+      electronicSignature: checkedOf("electronicSignature"),
       indication: valueOf("indication"),
       extraInfo: valueOf("extraInfo"),
       aiRequest: aiRequestEl ? aiRequestEl.value.trim() : "",
@@ -1687,7 +1751,12 @@ function loadDraft() {
   const fields = data.fields || {};
   Object.keys(fields).forEach((key) => {
     const el = document.getElementById(key);
-    if (el) el.value = fields[key];
+    if (!el) return;
+    if (el instanceof HTMLInputElement && el.type === "checkbox") {
+      el.checked = !!fields[key];
+      return;
+    }
+    el.value = fields[key];
   });
 
   ensureReport();
