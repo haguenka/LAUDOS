@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
@@ -7,7 +7,38 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
   <body>
-    <main class="app">
+    <section id="loginScreen" class="login-shell">
+      <div class="login-backdrop"></div>
+      <main class="login-card card">
+        <div class="brand login-brand">
+          <div class="logo">LR</div>
+          <div>
+            <p class="eyebrow">Radiologia</p>
+            <h1>Sistema de Laudos por IA - GUENKA</h1>
+            <p class="subtitle">Acesso controlado por perfil para emissão de laudos.</p>
+          </div>
+        </div>
+
+        <form id="loginForm" class="login-form">
+          <div class="field">
+            <label for="loginUsername">Login</label>
+            <input id="loginUsername" name="username" type="text" autocomplete="username" required />
+          </div>
+          <div class="field">
+            <label for="loginPassword">Senha</label>
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
+          </div>
+          <button id="loginSubmit" class="btn primary login-submit" type="submit">Entrar</button>
+          <p id="loginStatus" class="toolbar-hint">Informe seu login e senha.</p>
+          <p class="toolbar-hint">
+            Primeiro acesso administrativo padrão: login <strong>admin</strong>, senha <strong>admin123</strong>,
+            até que seja alterado no ambiente.
+          </p>
+        </form>
+      </main>
+    </section>
+
+    <main id="appShell" class="app hidden">
       <header class="app-header">
         <div class="brand">
           <div class="logo">LR</div>
@@ -17,22 +48,34 @@
             <p class="subtitle">Ditado por voz em pt-BR + modelos rápidos</p>
           </div>
         </div>
-        <div class="status-card">
-          <div class="status-row">
-            <span class="label">Reconhecimento de voz</span>
-            <span id="speechSupport" class="badge">Detectando...</span>
+        <div class="header-side">
+          <div class="status-card">
+            <div class="status-row">
+              <span class="label">Reconhecimento de voz</span>
+              <span id="speechSupport" class="badge">Detectando...</span>
+            </div>
+            <div class="status-row">
+              <span class="label">Microfone</span>
+              <span id="micStatus" class="badge idle">Inativo</span>
+            </div>
+            <div class="status-row">
+              <span class="label">Tema</span>
+              <button id="themeToggle" class="toggle-btn" type="button" aria-pressed="false">
+                <span class="toggle-text">Claro</span>
+              </button>
+            </div>
+            <p id="speechHint" class="hint">Permita o microfone no navegador para ditar.</p>
           </div>
-          <div class="status-row">
-            <span class="label">Microfone</span>
-            <span id="micStatus" class="badge idle">Inativo</span>
+
+          <div class="session-card card">
+            <p class="eyebrow">Sessão</p>
+            <h2 id="sessionDisplayName">Usuário</h2>
+            <p id="sessionDisplayMeta" class="subtitle">Perfil</p>
+            <div class="session-actions">
+              <button id="manageUsersBtn" class="btn ghost admin-only" type="button">Cadastrar/editar usuários</button>
+              <button id="logoutBtn" class="btn" type="button">Sair</button>
+            </div>
           </div>
-          <div class="status-row">
-            <span class="label">Tema</span>
-            <button id="themeToggle" class="toggle-btn" type="button" aria-pressed="false">
-              <span class="toggle-text">Claro</span>
-            </button>
-          </div>
-          <p id="speechHint" class="hint">Permita o microfone no navegador para ditar.</p>
         </div>
       </header>
 
@@ -41,8 +84,8 @@
           <div class="field">
             <label>Modalidade</label>
             <div class="mode-switch">
-              <button class="mode-btn active" data-mode="ct">Tomografia</button>
-              <button class="mode-btn" data-mode="mri">Ressonancia</button>
+              <button class="mode-btn active" data-mode="ct" type="button">Tomografia</button>
+              <button class="mode-btn" data-mode="mri" type="button">Ressonância</button>
             </div>
           </div>
           <div class="field">
@@ -75,17 +118,15 @@
           </div>
         </div>
         <div class="toolbar-actions">
-          <button id="applyTemplate" class="btn primary">Aplicar modelo</button>
-          <button id="addTemplate" class="btn ghost" type="button" title="Criar template com base no laudo digitado">Criar template do laudo</button>
+          <button id="applyTemplate" class="btn primary" type="button">Aplicar modelo</button>
           <button id="importTemplate" class="btn ghost" type="button" title="Importar template de arquivo">Importar template</button>
           <input id="templateFileInput" type="file" accept=".txt,.doc,.docx,.pdf,.json,application/json" hidden />
-          <button id="generateReport" class="btn">Gerar laudo</button>
-          <button id="clearForm" class="btn ghost">Limpar</button>
+          <button id="clearForm" class="btn ghost" type="button">Limpar formulário</button>
         </div>
         <p id="templateStatus" class="toolbar-hint">Nenhum template personalizado carregado.</p>
       </section>
 
-      <section class="card ai-panel card-animate">
+      <section id="aiPanel" class="card ai-panel card-animate">
         <div class="ai-header">
           <div>
             <h2>Assistente de IA</h2>
@@ -93,10 +134,12 @@
           </div>
           <div class="ai-actions">
             <button id="generateAi" class="btn primary" type="button">Gerar com IA</button>
+            <button id="saveAiSettings" class="btn ghost admin-only" type="button">Salvar padrão</button>
             <span id="aiStatus" class="badge idle">Aguardando</span>
           </div>
         </div>
-        <div class="ai-controls">
+        <p id="aiLockHint" class="toolbar-hint">Configuração padrão carregada.</p>
+        <div id="aiAdminControls" class="ai-controls admin-only">
           <div class="field">
             <label for="aiProvider">Provedor</label>
             <select id="aiProvider">
@@ -124,21 +167,18 @@
             <label for="aiBaseUrl">Base URL</label>
             <input id="aiBaseUrl" type="text" placeholder="http://localhost:1234/v1" />
           </div>
-          <div class="field field-wide">
-            <div class="section-header">
-              <label for="aiRequest">Solicitação para IA (laudo específico)</label>
-              <button class="mic-btn" data-target="aiRequest" data-label="Solicitação para IA">Ditado</button>
-            </div>
-            <textarea
-              id="aiRequest"
-              rows="3"
-              placeholder='Ex: "Crie um laudo padrão de ressonância de crânio para adulto jovem" ou "Crie um laudo de tomografia de crânio para AVC".'
-            ></textarea>
-          </div>
         </div>
-        <p class="toolbar-hint">
-          Dica: no LM Studio, use o endpoint OpenAI compatível. Para API externa, informe a URL e a key.
-        </p>
+        <div class="field field-wide">
+          <div class="section-header">
+            <label for="aiRequest">Solicitação para IA (laudo específico)</label>
+            <button class="mic-btn" data-target="aiRequest" data-label="Solicitação para IA" type="button">Ditado</button>
+          </div>
+          <textarea
+            id="aiRequest"
+            rows="3"
+            placeholder='Ex: "Crie um laudo padrão de ressonância de crânio para adulto jovem" ou "Crie um laudo de tomografia de crânio para AVC".'
+          ></textarea>
+        </div>
       </section>
 
       <section class="grid">
@@ -179,7 +219,7 @@
               <input id="referrer" type="text" placeholder="Ex: ANA CAROLINA TELES" />
             </div>
           </div>
-          <div class="section">
+          <div id="signatureSection" class="section admin-only">
             <div class="section-header">
               <h3>Assinatura do laudo</h3>
             </div>
@@ -208,14 +248,14 @@
           <div class="section">
             <div class="section-header">
               <h3>Indicação clínica</h3>
-              <button class="mic-btn" data-target="indication" data-label="Indicação clínica">Ditado</button>
+              <button class="mic-btn" data-target="indication" data-label="Indicação clínica" type="button">Ditado</button>
             </div>
             <textarea id="indication" rows="3" placeholder="Motivo do exame."></textarea>
           </div>
           <div class="section">
             <div class="section-header">
               <h3>Informações adicionais</h3>
-              <button class="mic-btn" data-target="extraInfo" data-label="Informações adicionais">Ditado</button>
+              <button class="mic-btn" data-target="extraInfo" data-label="Informações adicionais" type="button">Ditado</button>
             </div>
             <textarea id="extraInfo" rows="3" placeholder="Histórico, cirurgias, comparativos."></textarea>
           </div>
@@ -226,34 +266,38 @@
           <div class="section">
             <div class="section-header">
               <h3>Título do exame no PDF</h3>
-              <button class="mic-btn" data-target="examTitle" data-label="Título do exame">Ditado</button>
+              <button class="mic-btn" data-target="examTitle" data-label="Título do exame" type="button">Ditado</button>
             </div>
-            <textarea
-              id="examTitle"
-              rows="2"
-              placeholder="Ex: TOMOGRAFIA COMPUTADORIZADA DOS SEIOS DA FACE"
-            ></textarea>
+            <textarea id="examTitle" rows="2" placeholder="Ex: TOMOGRAFIA COMPUTADORIZADA DOS SEIOS DA FACE"></textarea>
+            <button class="btn danger btn-small clear-field-btn" data-clear-target="examTitle" type="button">Apagar</button>
           </div>
           <div class="section">
             <div class="section-header">
               <h3>Técnica</h3>
-              <button class="mic-btn" data-target="technique" data-label="Técnica">Ditado</button>
+              <button class="mic-btn" data-target="technique" data-label="Técnica" type="button">Ditado</button>
             </div>
             <textarea id="technique" rows="6"></textarea>
+            <button class="btn danger btn-small clear-field-btn" data-clear-target="technique" type="button">Apagar</button>
           </div>
           <div class="section">
             <div class="section-header">
               <h3>Laudo</h3>
-              <button class="mic-btn" data-target="findings" data-label="Laudo">Ditado</button>
+              <button class="mic-btn" data-target="findings" data-label="Laudo" type="button">Ditado</button>
             </div>
             <textarea id="findings" rows="12"></textarea>
+            <button class="btn danger btn-small clear-field-btn" data-clear-target="findings" type="button">Apagar</button>
           </div>
           <div class="section">
             <div class="section-header">
               <h3>Impressão</h3>
-              <button class="mic-btn" data-target="impression" data-label="Impressão">Ditado</button>
+              <button class="mic-btn" data-target="impression" data-label="Impressão" type="button">Ditado</button>
             </div>
             <textarea id="impression" rows="6"></textarea>
+            <button class="btn danger btn-small clear-field-btn" data-clear-target="impression" type="button">Apagar</button>
+          </div>
+          <div class="report-actions-stack">
+            <button id="generateReport" class="btn primary" type="button">Gerar laudo</button>
+            <button id="addTemplate" class="btn ghost" type="button" title="Criar template com base no laudo digitado">Criar template do laudo</button>
           </div>
         </div>
       </section>
@@ -265,12 +309,12 @@
             <p class="subtitle">Clique em Gerar laudo para montar o texto final.</p>
           </div>
           <div class="preview-actions">
-            <button id="copyReport" class="btn">Copiar</button>
-            <button id="downloadReport" class="btn">Baixar .txt</button>
-            <button id="downloadPdf" class="btn">Baixar PDF</button>
-            <button id="saveFinalReport" class="btn primary">Salvar finalizado</button>
-            <button id="saveDraft" class="btn ghost">Salvar rascunho</button>
-            <button id="loadDraft" class="btn ghost">Carregar</button>
+            <button id="copyReport" class="btn" type="button">Copiar</button>
+            <button id="downloadReport" class="btn" type="button">Baixar .txt</button>
+            <button id="downloadPdf" class="btn" type="button">Baixar PDF</button>
+            <button id="saveFinalReport" class="btn primary" type="button">Salvar finalizado</button>
+            <button id="saveDraft" class="btn ghost" type="button">Salvar rascunho</button>
+            <button id="loadDraft" class="btn ghost" type="button">Carregar</button>
           </div>
         </div>
         <pre id="reportOutput" class="report-output">Seu laudo aparecerá aqui.</pre>
@@ -298,7 +342,7 @@
           <p>Fale pausadamente. Diga "ponto" e "vírgula" para pontuação. Clique em Ditado novamente para parar.</p>
         </div>
         <div class="footer-actions">
-          <button id="stopDictation" class="btn danger">Parar ditado</button>
+          <button id="stopDictation" class="btn danger" type="button">Parar ditado</button>
           <span id="dictationTarget" class="badge idle">Nenhum campo ativo</span>
         </div>
       </div>

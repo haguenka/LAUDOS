@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cadastro de Radiologistas</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="user-admin-shell">
+      <header class="app-header">
+        <div class="brand">
+          <div class="logo">LR</div>
+          <div>
+            <p class="eyebrow">Administrador</p>
+            <h1>Cadastro de usuários radiologistas</h1>
+            <p class="subtitle">Gerencie login, CRM e subespecialidade usados na assinatura eletrônica.</p>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="status-row">
+            <span class="label">Administrador</span>
+            <span class="badge live">{{ session_data.user.fullName }}</span>
+          </div>
+          <p class="hint">Subespecialidade vazia será salva como Radiologista.</p>
+        </div>
+      </header>
+
+      <section class="user-admin-grid">
+        <section class="card">
+          <h2 id="userFormTitle">Novo radiologista</h2>
+          <form id="userForm">
+            <input id="managedUserId" type="hidden" />
+            <div class="field">
+              <label for="managedUserFullName">Nome completo</label>
+              <input id="managedUserFullName" type="text" required />
+            </div>
+            <div class="field">
+              <label for="managedUserUsername">Login</label>
+              <input id="managedUserUsername" type="text" required />
+            </div>
+            <div class="field">
+              <label for="managedUserPassword">Senha</label>
+              <input id="managedUserPassword" type="password" placeholder="Obrigatória no cadastro; opcional na edição" />
+            </div>
+            <div class="field">
+              <label for="managedUserCrm">CRM</label>
+              <input id="managedUserCrm" type="text" required />
+            </div>
+            <div class="field">
+              <label for="managedUserSubspecialty">Subespecialidade</label>
+              <input id="managedUserSubspecialty" type="text" placeholder="Ex: Neurorradiologia ou Radiologista" />
+            </div>
+            <div class="form-actions">
+              <button id="saveManagedUser" class="btn primary" type="submit">Salvar usuário</button>
+              <button id="resetManagedUser" class="btn ghost" type="button">Limpar</button>
+            </div>
+            <p id="userFormStatus" class="toolbar-hint">Preencha os dados para cadastrar um novo radiologista.</p>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="preview-header">
+            <div>
+              <h2>Radiologistas cadastrados</h2>
+              <p class="subtitle">Cada usuário tem login próprio e assinatura eletrônica vinculada ao cadastro.</p>
+            </div>
+            <div class="preview-actions">
+              <button id="refreshManagedUsers" class="btn ghost btn-small" type="button">Atualizar</button>
+            </div>
+          </div>
+          <p id="managedUsersStatus" class="toolbar-hint">Carregando usuários...</p>
+          <div id="managedUsersList" class="user-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script id="sessionData" type="application/json">{{ session_data|tojson }}</script>
+    <script src="{{ url_for('static', filename='admin_users.js') }}"></script>
+  </body>
+</html>
