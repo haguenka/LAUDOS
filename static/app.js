@@ -188,6 +188,7 @@ const aiPinnedNoticeEl = document.getElementById("aiPinnedNotice");
 const aiAdminControlsEl = document.getElementById("aiAdminControls");
 const signatureSectionEl = document.getElementById("signatureSection");
 const clearFieldButtons = document.querySelectorAll(".clear-field-btn");
+const examTitleEl = document.getElementById("examTitle");
 
 const draftKey = "radiologiaLaudoDraft";
 const customTemplatesKey = "radiologiaCustomTemplates";
@@ -665,6 +666,7 @@ function setMode(mode) {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
   refreshSpecificTemplateOptions();
+  syncExamTitleField(true);
 }
 
 function applyTheme(theme) {
@@ -807,6 +809,41 @@ function buildExamTitle(mode, regionKey) {
   return (titles[mode] && titles[mode][regionKey]) || `${mode === "ct" ? "TOMOGRAFIA COMPUTADORIZADA" : "RESSONÂNCIA MAGNÉTICA"} ${regionLabels[regionKey] || ""}`.trim();
 }
 
+function normalizeExamTitleValue(value, mode, regionKey) {
+  const autoTitle = buildExamTitle(mode, regionKey);
+  const cleanValue = String(value || "").trim();
+  if (!cleanValue) return autoTitle;
+
+  const normalizedValue = stripDiacritics(cleanValue).toLowerCase().replace(/\s+/g, " ").trim();
+  const normalizedRegion = stripDiacritics(regionLabels[regionKey] || regionKey).toLowerCase();
+  const normalizedAutoTitle = stripDiacritics(autoTitle).toLowerCase();
+  const genericCandidates = new Set([
+    normalizedAutoTitle,
+    `tc ${normalizedRegion}`,
+    `rm ${normalizedRegion}`,
+    `tomografia ${normalizedRegion}`,
+    `tomografia computadorizada ${normalizedRegion}`,
+    `ressonancia ${normalizedRegion}`,
+    `ressonancia magnetica ${normalizedRegion}`,
+  ]);
+
+  if (genericCandidates.has(normalizedValue)) {
+    return autoTitle;
+  }
+
+  return cleanValue.toLocaleUpperCase("pt-BR");
+}
+
+function syncExamTitleField(force = false) {
+  if (!examTitleEl) return buildExamTitle(state.mode, regionSelect ? regionSelect.value : "cranio");
+  const regionKey = regionSelect ? regionSelect.value : "cranio";
+  const normalizedTitle = normalizeExamTitleValue(force ? "" : examTitleEl.value, state.mode, regionKey);
+  if (force || examTitleEl.value.trim() !== normalizedTitle) {
+    examTitleEl.value = normalizedTitle;
+  }
+  return examTitleEl.value.trim() || buildExamTitle(state.mode, regionKey);
+}
+
 function buildTechnique(mode, regionKey, contrastKey) {
   const regionLabel = (regionLabels[regionKey] || regionKey).toLowerCase();
   const contrastLabel = getContrastLabel(mode, contrastKey).toLowerCase();
@@ -862,9 +899,7 @@ function applyTemplate() {
   findingsEl.value = template.findings || "";
   impressionEl.value = template.impression || "";
   if (examTitleEl) {
-    examTitleEl.value =
-      (selectedTemplate && selectedTemplate.title ? selectedTemplate.title : "") ||
-      buildExamTitle(state.mode, regionKey);
+    examTitleEl.value = buildExamTitle(state.mode, regionKey);
   }
 }
 
@@ -1686,7 +1721,7 @@ function formatFindingsText(text) {
 
 function buildReport() {
   const lines = [];
-  const examTitle = valueOf("examTitle") || buildExamTitle(state.mode, regionSelect.value);
+  const examTitle = syncExamTitleField();
   const patientName = valueOf("patientName");
   const patientId = valueOf("patientId");
   const patientAge = syncPatientAgeField();
@@ -1766,7 +1801,7 @@ function collectReportPayload(existingId = "") {
     status: "finalized",
     finalText: ensureReport(),
     fields: {
-      examTitle: valueOf("examTitle"),
+      examTitle: syncExamTitleField(),
       patientName: valueOf("patientName"),
       patientId: valueOf("patientId"),
       patientAge: syncPatientAgeField(),
@@ -1851,6 +1886,7 @@ function populateFormFromSavedReport(report) {
     el.value = fields[key] || "";
   });
 
+  syncExamTitleField(false);
   syncPatientAgeField();
   ensureReport();
 }
@@ -2024,6 +2060,7 @@ function clearForm() {
   if (isAdminUser() && electronicSignatureEl instanceof HTMLInputElement) {
     electronicSignatureEl.checked = true;
   }
+  syncExamTitleField(true);
   syncPatientAgeField();
   reportOutputEl.textContent = "Seu laudo aparecerá aqui.";
   state.currentReportId = "";
@@ -2036,7 +2073,7 @@ function saveDraft() {
     region: regionSelect.value,
     contrast: contrastSelect.value,
     fields: {
-      examTitle: valueOf("examTitle"),
+      examTitle: syncExamTitleField(),
       patientName: valueOf("patientName"),
       patientId: valueOf("patientId"),
       patientAge: syncPatientAgeField(),
@@ -2089,6 +2126,7 @@ function loadDraft() {
     el.value = fields[key];
   });
 
+  syncExamTitleField(false);
   syncPatientAgeField();
   ensureReport();
 }
@@ -2297,6 +2335,7 @@ modeButtons.forEach((btn) => {
 if (regionSelect) {
   regionSelect.addEventListener("change", () => {
     refreshSpecificTemplateOptions();
+    syncExamTitleField(true);
   });
 }
 
