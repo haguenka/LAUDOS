@@ -134,11 +134,14 @@
           </div>
           <div class="ai-actions">
             <button id="generateAi" class="btn primary" type="button">Gerar com IA</button>
-            <button id="saveAiSettings" class="btn ghost admin-only" type="button">Salvar padrão</button>
+            <button id="saveAiSettings" class="btn ghost admin-only" type="button">Confirmar IA padrão</button>
             <span id="aiStatus" class="badge idle">Aguardando</span>
           </div>
         </div>
         <p id="aiLockHint" class="toolbar-hint">Configuração padrão carregada.</p>
+        <p id="aiPinnedNotice" class="toolbar-hint admin-only">
+          A IA confirmada aqui fica permanente no sistema, mesmo após logout do administrador, até nova confirmação.
+        </p>
         <div id="aiAdminControls" class="ai-controls admin-only">
           <div class="field">
             <label for="aiProvider">Provedor</label>
