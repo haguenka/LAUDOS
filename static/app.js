@@ -10,6 +10,7 @@
   currentReportId: "",
   currentUser: null,
   aiSettings: null,
+  fieldHistory: {},
 };
 
 const themeKey = "radiologiaTheme";
@@ -189,6 +190,7 @@ const aiPinnedNoticeEl = document.getElementById("aiPinnedNotice");
 const aiAdminControlsEl = document.getElementById("aiAdminControls");
 const signatureSectionEl = document.getElementById("signatureSection");
 const clearFieldButtons = document.querySelectorAll(".clear-field-btn");
+const undoFieldButtons = document.querySelectorAll(".undo-field-btn");
 const examTitleEl = document.getElementById("examTitle");
 const reportColumnWidthControlEl = document.getElementById("reportColumnWidthControl");
 const reportColumnWidthValueEl = document.getElementById("reportColumnWidthValue");
@@ -860,12 +862,76 @@ function normalizeExamTitleValue(value, mode, regionKey) {
   return cleanValue.toLocaleUpperCase("pt-BR");
 }
 
+function ensureFieldHistoryEntry(fieldId) {
+  if (!state.fieldHistory[fieldId]) {
+    state.fieldHistory[fieldId] = {
+      undoStack: [],
+      lastValue: "",
+    };
+  }
+  return state.fieldHistory[fieldId];
+}
+
+function setFieldHistoryBaseline(fieldId, value) {
+  const history = ensureFieldHistoryEntry(fieldId);
+  history.undoStack = [];
+  history.lastValue = String(value || "");
+}
+
+function setFieldValueWithHistory(fieldId, nextValue) {
+  const field = document.getElementById(fieldId);
+  if (!field) return;
+  const history = ensureFieldHistoryEntry(fieldId);
+  const normalizedNext = String(nextValue || "");
+  if (field.value !== normalizedNext) {
+    history.undoStack.push(field.value);
+    if (history.undoStack.length > 200) {
+      history.undoStack.shift();
+    }
+    field.value = normalizedNext;
+  }
+  history.lastValue = field.value;
+}
+
+function undoFieldValue(fieldId) {
+  const field = document.getElementById(fieldId);
+  if (!field) return;
+  const history = ensureFieldHistoryEntry(fieldId);
+  if (!history.undoStack.length) return;
+  field.value = history.undoStack.pop();
+  history.lastValue = field.value;
+  ensureReport();
+}
+
+function trackUndoHistory(fieldId) {
+  const field = document.getElementById(fieldId);
+  if (!field) return;
+  setFieldHistoryBaseline(fieldId, field.value);
+  field.addEventListener("input", () => {
+    const history = ensureFieldHistoryEntry(fieldId);
+    if (field.value === history.lastValue) return;
+    history.undoStack.push(history.lastValue);
+    if (history.undoStack.length > 200) {
+      history.undoStack.shift();
+    }
+    history.lastValue = field.value;
+  });
+}
+
+function resetTrackedFieldHistories(fieldIds = []) {
+  fieldIds.forEach((fieldId) => {
+    const field = document.getElementById(fieldId);
+    if (!field) return;
+    setFieldHistoryBaseline(fieldId, field.value);
+  });
+}
+
 function syncExamTitleField(force = false) {
   if (!examTitleEl) return buildExamTitle(state.mode, regionSelect ? regionSelect.value : "cranio");
   const regionKey = regionSelect ? regionSelect.value : "cranio";
   const normalizedTitle = normalizeExamTitleValue(force ? "" : examTitleEl.value, state.mode, regionKey);
   if (force || examTitleEl.value.trim() !== normalizedTitle) {
-    examTitleEl.value = normalizedTitle;
+    setFieldValueWithHistory("examTitle", normalizedTitle);
   }
   return examTitleEl.value.trim() || buildExamTitle(state.mode, regionKey);
 }
@@ -920,12 +986,14 @@ function applyTemplate() {
       ? selectedTemplate
       : defaultTemplate;
 
-  techniqueEl.value =
-    template.technique || buildTechnique(state.mode, regionKey, contrastSelect.value);
-  findingsEl.value = template.findings || "";
-  impressionEl.value = template.impression || "";
+  setFieldValueWithHistory(
+    "technique",
+    template.technique || buildTechnique(state.mode, regionKey, contrastSelect.value)
+  );
+  setFieldValueWithHistory("findings", template.findings || "");
+  setFieldValueWithHistory("impression", template.impression || "");
   if (examTitleEl) {
-    examTitleEl.value = buildExamTitle(state.mode, regionKey);
+    setFieldValueWithHistory("examTitle", buildExamTitle(state.mode, regionKey));
   }
 }
 
@@ -1912,6 +1980,7 @@ function populateFormFromSavedReport(report) {
     el.value = fields[key] || "";
   });
 
+  resetTrackedFieldHistories(["examTitle", "technique", "findings", "impression"]);
   syncExamTitleField(false);
   syncPatientAgeField();
   ensureReport();
@@ -2073,6 +2142,10 @@ function clearForm() {
   ].forEach((fieldId) => {
     const element = document.getElementById(fieldId);
     if (!element) return;
+    if (["examTitle", "technique", "findings", "impression", "aiRequest"].includes(fieldId)) {
+      setFieldValueWithHistory(fieldId, "");
+      return;
+    }
     element.value = "";
   });
   if (isAdminUser()) {
@@ -2152,6 +2225,7 @@ function loadDraft() {
     el.value = fields[key];
   });
 
+  resetTrackedFieldHistories(["examTitle", "technique", "findings", "impression"]);
   syncExamTitleField(false);
   syncPatientAgeField();
   ensureReport();
@@ -2482,8 +2556,16 @@ clearFieldButtons.forEach((button) => {
     const targetId = button.dataset.clearTarget;
     const target = targetId ? document.getElementById(targetId) : null;
     if (!target) return;
-    target.value = "";
+    setFieldValueWithHistory(targetId, "");
     ensureReport();
+  });
+});
+
+undoFieldButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const targetId = button.dataset.undoTarget;
+    if (!targetId) return;
+    undoFieldValue(targetId);
   });
 });
 
@@ -2643,11 +2725,13 @@ if (saveApiKeyBtn) {
 async function initApp() {
   initTheme();
   initReportColumnWidth();
+  ["examTitle", "technique", "findings", "impression"].forEach(trackUndoHistory);
   setupSpeech();
   setMode("ct");
   loadAiPrefs();
   updateAiDefaults();
   syncPatientAgeField();
+  resetTrackedFieldHistories(["examTitle", "technique", "findings", "impression"]);
 
   try {
     const sessionData = await refreshSessionState();
