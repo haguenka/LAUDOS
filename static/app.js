@@ -8,6 +8,8 @@
   pendingStart: null,
   savedReports: [],
   currentReportId: "",
+  currentUser: null,
+  aiSettings: null,
 };
 
 const themeKey = "radiologiaTheme";
@@ -170,11 +172,25 @@ const templateSourceLabelEl = document.getElementById("templateSourceLabel");
 const closeTemplateModalBtn = document.getElementById("closeTemplateModal");
 const cancelTemplateModalBtn = document.getElementById("cancelTemplateModal");
 const saveTemplateModalBtn = document.getElementById("saveTemplateModal");
+const loginScreenEl = document.getElementById("loginScreen");
+const appShellEl = document.getElementById("appShell");
+const loginFormEl = document.getElementById("loginForm");
+const loginUsernameEl = document.getElementById("loginUsername");
+const loginPasswordEl = document.getElementById("loginPassword");
+const loginStatusEl = document.getElementById("loginStatus");
+const logoutBtn = document.getElementById("logoutBtn");
+const sessionDisplayNameEl = document.getElementById("sessionDisplayName");
+const sessionDisplayMetaEl = document.getElementById("sessionDisplayMeta");
+const manageUsersBtn = document.getElementById("manageUsersBtn");
+const saveAiSettingsBtn = document.getElementById("saveAiSettings");
+const aiLockHintEl = document.getElementById("aiLockHint");
+const aiAdminControlsEl = document.getElementById("aiAdminControls");
+const signatureSectionEl = document.getElementById("signatureSection");
+const clearFieldButtons = document.querySelectorAll(".clear-field-btn");
 
 const draftKey = "radiologiaLaudoDraft";
 const customTemplatesKey = "radiologiaCustomTemplates";
 const customTemplateListKey = "radiologiaCustomTemplateList";
-const aiPrefsKey = "radiologiaAiPrefs";
 let modelFetchInFlight = false;
 let pendingTemplateFilename = "";
 
@@ -465,6 +481,161 @@ async function loadCustomTemplates() {
   saveStoredCustomTemplateList(customTemplateList);
   updateTemplateStatus(customTemplateList, warning);
   refreshSpecificTemplateOptions();
+}
+
+function isAdminUser() {
+  return !!(state.currentUser && state.currentUser.role === "admin");
+}
+
+function isRadiologistUser() {
+  return !!(state.currentUser && state.currentUser.role === "radiologist");
+}
+
+function getCurrentRadiologistSignature() {
+  if (!isRadiologistUser()) {
+    return {
+      radiologistName: valueOf("radiologistName"),
+      radiologistCrm: valueOf("radiologistCrm"),
+      radiologistRole: valueOf("radiologistRole"),
+      electronicSignature: checkedOf("electronicSignature"),
+    };
+  }
+
+  return {
+    radiologistName: state.currentUser.fullName || "",
+    radiologistCrm: state.currentUser.crm || "",
+    radiologistRole: state.currentUser.signatureRole || state.currentUser.subspecialty || "Radiologista",
+    electronicSignature: true,
+  };
+}
+
+function updateAiLockHint() {
+  if (!aiLockHintEl) return;
+  const settings = state.aiSettings || {};
+  const providerLabel =
+    settings.provider === "gemini"
+      ? "Gemini"
+      : settings.provider === "openai"
+        ? "OpenAI compatível"
+        : "LM Studio";
+  const modelLabel = settings.model ? `Modelo: ${settings.model}` : "Modelo padrão ainda não definido";
+  if (isAdminUser()) {
+    aiLockHintEl.textContent = `Esta configuração é o padrão global para todos os radiologistas. ${providerLabel}. ${modelLabel}.`;
+    return;
+  }
+  aiLockHintEl.textContent = `Usando a IA padrão definida pelo administrador. ${providerLabel}. ${modelLabel}.`;
+}
+
+function applyAiSettings(settings) {
+  const normalized = settings || {};
+  const provider = normalized.provider || "lmstudio";
+  const model = normalized.model || "";
+  const baseUrl = normalized.baseUrl || defaultBaseUrlForProvider(provider);
+  state.aiSettings = { ...normalized, provider, model, baseUrl };
+
+  if (aiProviderEl) aiProviderEl.value = provider;
+  if (aiBaseUrlEl) {
+    aiBaseUrlEl.value = baseUrl;
+    aiBaseUrlEl.dataset.provider = provider;
+  }
+  if (aiModelEl) {
+    setModelOptions(defaultModelsForProvider(provider), model);
+    if (model) ensureModelOption(model);
+    aiModelEl.dataset.provider = provider;
+  }
+  updateAiLockHint();
+}
+
+function updateRoleVisibility() {
+  document.body.dataset.role = state.currentUser ? state.currentUser.role : "";
+  document.querySelectorAll(".admin-only").forEach((element) => {
+    element.classList.toggle("hidden", !isAdminUser());
+  });
+  if (signatureSectionEl) {
+    signatureSectionEl.classList.toggle("hidden", !isAdminUser());
+  }
+  if (aiAdminControlsEl) {
+    aiAdminControlsEl.classList.toggle("hidden", !isAdminUser());
+  }
+}
+
+function showLoginScreen(message = "") {
+  state.currentUser = null;
+  if (loginScreenEl) loginScreenEl.classList.remove("hidden");
+  if (appShellEl) appShellEl.classList.add("hidden");
+  if (loginStatusEl) {
+    loginStatusEl.textContent = message || "Informe seu login e senha.";
+  }
+}
+
+function showAppShell(sessionData) {
+  state.currentUser = sessionData && sessionData.user ? sessionData.user : null;
+  if (sessionDisplayNameEl) {
+    sessionDisplayNameEl.textContent =
+      (state.currentUser && (state.currentUser.fullName || state.currentUser.username)) || "Usuário";
+  }
+  if (sessionDisplayMetaEl) {
+    if (state.currentUser) {
+      const roleLabel = state.currentUser.role === "admin" ? "Administrador" : "Radiologista";
+      const crmText = state.currentUser.crm ? ` | CRM ${state.currentUser.crm}` : "";
+      const specialtyText =
+        state.currentUser.role === "radiologist" && state.currentUser.signatureRole
+          ? ` | ${state.currentUser.signatureRole}`
+          : "";
+      sessionDisplayMetaEl.textContent = `${roleLabel}${crmText}${specialtyText}`;
+    } else {
+      sessionDisplayMetaEl.textContent = "";
+    }
+  }
+  updateRoleVisibility();
+  applyAiSettings((sessionData && sessionData.aiSettings) || {});
+  if (loginScreenEl) loginScreenEl.classList.add("hidden");
+  if (appShellEl) appShellEl.classList.remove("hidden");
+}
+
+async function fetchSessionState() {
+  const response = await fetch("/session", { method: "GET" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Falha ao consultar a sessão.");
+  }
+  return data;
+}
+
+async function refreshSessionState() {
+  const sessionData = await fetchSessionState();
+  if (sessionData && sessionData.authenticated) {
+    showAppShell(sessionData);
+    return sessionData;
+  }
+  showLoginScreen();
+  return sessionData;
+}
+
+async function submitLogin(username, password) {
+  const response = await fetch("/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Falha ao autenticar.");
+  }
+  showAppShell(data);
+  return data;
+}
+
+async function performLogout() {
+  const response = await fetch("/logout", { method: "POST" });
+  if (!response.ok) {
+    throw new Error("Falha ao encerrar a sessão.");
+  }
+  showLoginScreen("Sessão encerrada.");
+}
+
+function openUserManagementWindow() {
+  window.open("/admin/users/manage", "cadastro-radiologistas", "width=1180,height=860,resizable=yes,scrollbars=yes");
 }
 
 function setMode(mode) {
@@ -1005,6 +1176,10 @@ function updateGlobalKeyStatusLabel(status, provider) {
 
 async function fetchGlobalApiKeyStatus() {
   if (!globalKeyStatusEl) return null;
+  if (!isAdminUser()) {
+    globalKeyStatusEl.textContent = "";
+    return null;
+  }
   try {
     const response = await fetch("/api-keys/status", { method: "GET" });
     const data = await response.json().catch(() => ({}));
@@ -1062,27 +1237,11 @@ async function saveGlobalApiKey() {
 }
 
 function saveAiPrefs() {
-  if (!aiProviderEl) return;
-  const prefs = {
-    provider: aiProviderEl.value,
-    model: aiModelEl.value.trim(),
-    baseUrl: aiBaseUrlEl.value.trim(),
-  };
-  window.localStorage.setItem(aiPrefsKey, JSON.stringify(prefs));
+  return;
 }
 
 function loadAiPrefs() {
-  if (!aiProviderEl) return;
-  const raw = window.localStorage.getItem(aiPrefsKey);
-  if (!raw) return;
-  try {
-    const prefs = JSON.parse(raw);
-    if (prefs.provider) aiProviderEl.value = prefs.provider;
-    if (prefs.model) ensureModelOption(prefs.model);
-    if (prefs.baseUrl) aiBaseUrlEl.value = prefs.baseUrl;
-  } catch (err) {
-    return;
-  }
+  return;
 }
 
 function setModelOptions(models, selected) {
@@ -1124,15 +1283,16 @@ function defaultModelsForProvider(provider) {
   return ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"];
 }
 
+function defaultBaseUrlForProvider(provider) {
+  if (provider === "lmstudio") return "http://localhost:1234/v1";
+  if (provider === "gemini") return "https://generativelanguage.googleapis.com/v1beta/openai";
+  return "https://api.openai.com/v1";
+}
+
 function updateAiDefaults() {
   if (!aiProviderEl || !aiBaseUrlEl || !aiModelEl) return;
   const provider = aiProviderEl.value;
-  const defaultUrl =
-    provider === "lmstudio"
-      ? "http://localhost:1234/v1"
-      : provider === "gemini"
-        ? "https://generativelanguage.googleapis.com/v1beta/openai"
-        : "https://api.openai.com/v1";
+  const defaultUrl = defaultBaseUrlForProvider(provider);
   if (aiBaseUrlEl.dataset.provider !== provider) {
     aiBaseUrlEl.value = defaultUrl;
     aiBaseUrlEl.dataset.provider = provider;
@@ -1151,8 +1311,50 @@ function updateAiDefaults() {
   }
 }
 
+async function saveDefaultAiSettings() {
+  if (!isAdminUser()) return;
+  if (!aiProviderEl || !aiModelEl || !aiBaseUrlEl) return;
+
+  const provider = aiProviderEl.value;
+  const model = aiModelEl.value.trim();
+  const baseUrl = aiBaseUrlEl.value.trim() || defaultBaseUrlForProvider(provider);
+
+  if (!model) {
+    window.alert("Informe o modelo padrão que será usado pelos radiologistas.");
+    return;
+  }
+
+  if (saveAiSettingsBtn) {
+    saveAiSettingsBtn.disabled = true;
+    saveAiSettingsBtn.textContent = "Salvando...";
+  }
+
+  try {
+    const response = await fetch("/admin/ai-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, model, baseUrl }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error((data && data.error) || "Falha ao salvar configuração padrão de IA.");
+    }
+    applyAiSettings(data.settings || { provider, model, baseUrl });
+    updateGlobalKeyStatusLabel(data.status || null, provider);
+    window.alert("Configuração padrão da IA salva para todos os radiologistas.");
+  } catch (err) {
+    window.alert(err.message || "Não foi possível salvar a configuração padrão da IA.");
+  } finally {
+    if (saveAiSettingsBtn) {
+      saveAiSettingsBtn.disabled = false;
+      saveAiSettingsBtn.textContent = "Salvar padrão";
+    }
+  }
+}
+
 async function fetchModels() {
   if (!refreshModelsBtn || !aiModelEl) return;
+  if (!isAdminUser()) return;
   if (modelFetchInFlight) return;
   const provider = aiProviderEl.value;
   const baseUrl = aiBaseUrlEl.value.trim();
@@ -1220,6 +1422,7 @@ async function fetchModels() {
 
 function autoFetchModelsIfNeeded() {
   if (!aiProviderEl || !aiModelEl) return;
+  if (!isAdminUser()) return;
   if (aiProviderEl.value !== "lmstudio") return;
   if (aiModelEl.options.length === 0) {
     fetchModels();
@@ -1228,10 +1431,14 @@ function autoFetchModelsIfNeeded() {
 
 async function generateWithAi() {
   if (!generateAiBtn) return;
-  const provider = aiProviderEl.value;
-  const model = aiModelEl.value.trim();
-  const baseUrl = aiBaseUrlEl.value.trim();
-  const apiKey = aiApiKeyEl.value.trim();
+  const provider = isAdminUser() ? aiProviderEl.value : (state.aiSettings && state.aiSettings.provider) || "lmstudio";
+  const model = isAdminUser()
+    ? aiModelEl.value.trim()
+    : ((state.aiSettings && state.aiSettings.model) || "").trim();
+  const baseUrl = isAdminUser()
+    ? aiBaseUrlEl.value.trim()
+    : ((state.aiSettings && state.aiSettings.baseUrl) || "").trim();
+  const apiKey = isAdminUser() ? aiApiKeyEl.value.trim() : "";
 
   if (!model) {
     window.alert("Informe o modelo de IA.");
@@ -1470,10 +1677,11 @@ function buildReport() {
   const technique = valueOf("technique");
   const findings = valueOf("findings");
   const impression = valueOf("impression");
-  const radiologistName = valueOf("radiologistName");
-  const radiologistCrm = valueOf("radiologistCrm");
-  const radiologistRole = valueOf("radiologistRole");
-  const electronicSignature = checkedOf("electronicSignature");
+  const signature = getCurrentRadiologistSignature();
+  const radiologistName = signature.radiologistName;
+  const radiologistCrm = signature.radiologistCrm;
+  const radiologistRole = signature.radiologistRole;
+  const electronicSignature = signature.electronicSignature;
 
   lines.push(examTitle);
   lines.push("");
@@ -1528,6 +1736,7 @@ function ensureReport() {
 }
 
 function collectReportPayload(existingId = "") {
+  const signature = getCurrentRadiologistSignature();
   return {
     id: existingId || state.currentReportId || "",
     mode: state.mode,
@@ -1544,10 +1753,10 @@ function collectReportPayload(existingId = "") {
       studyDate: valueOf("studyDate"),
       patientBirthDate: valueOf("patientBirthDate"),
       referrer: valueOf("referrer"),
-      radiologistName: valueOf("radiologistName"),
-      radiologistCrm: valueOf("radiologistCrm"),
-      radiologistRole: valueOf("radiologistRole"),
-      electronicSignature: checkedOf("electronicSignature"),
+      radiologistName: signature.radiologistName,
+      radiologistCrm: signature.radiologistCrm,
+      radiologistRole: signature.radiologistRole,
+      electronicSignature: signature.electronicSignature,
       indication: valueOf("indication"),
       extraInfo: valueOf("extraInfo"),
       aiRequest: aiRequestEl ? aiRequestEl.value.trim() : "",
@@ -1611,6 +1820,9 @@ function populateFormFromSavedReport(report) {
   Object.keys(fields).forEach((key) => {
     const el = document.getElementById(key);
     if (!el) return;
+    if (isRadiologistUser() && ["radiologistName", "radiologistCrm", "radiologistRole", "electronicSignature"].includes(key)) {
+      return;
+    }
     if (el instanceof HTMLInputElement && el.type === "checkbox") {
       el.checked = !!fields[key];
       return;
@@ -1760,17 +1972,35 @@ async function downloadReportPdf(payload = null) {
 }
 
 function clearForm() {
-  const inputs = document.querySelectorAll("input, textarea");
-  inputs.forEach((input) => {
-    if (input instanceof HTMLInputElement && input.type === "checkbox") {
-      input.checked = false;
-      return;
-    }
-    input.value = "";
+  [
+    "patientName",
+    "patientId",
+    "patientAge",
+    "patientSex",
+    "studyDate",
+    "patientBirthDate",
+    "referrer",
+    "indication",
+    "extraInfo",
+    "examTitle",
+    "technique",
+    "findings",
+    "impression",
+    "aiRequest",
+  ].forEach((fieldId) => {
+    const element = document.getElementById(fieldId);
+    if (!element) return;
+    element.value = "";
   });
-  document.getElementById("patientSex").value = "";
+  if (isAdminUser()) {
+    ["radiologistName", "radiologistCrm", "radiologistRole"].forEach((fieldId) => {
+      const element = document.getElementById(fieldId);
+      if (!element) return;
+      element.value = "";
+    });
+  }
   const electronicSignatureEl = document.getElementById("electronicSignature");
-  if (electronicSignatureEl instanceof HTMLInputElement) {
+  if (isAdminUser() && electronicSignatureEl instanceof HTMLInputElement) {
     electronicSignatureEl.checked = true;
   }
   syncPatientAgeField();
@@ -1779,6 +2009,7 @@ function clearForm() {
 }
 
 function saveDraft() {
+  const signature = getCurrentRadiologistSignature();
   const data = {
     mode: state.mode,
     region: regionSelect.value,
@@ -1792,10 +2023,10 @@ function saveDraft() {
       studyDate: valueOf("studyDate"),
       patientBirthDate: valueOf("patientBirthDate"),
       referrer: valueOf("referrer"),
-      radiologistName: valueOf("radiologistName"),
-      radiologistCrm: valueOf("radiologistCrm"),
-      radiologistRole: valueOf("radiologistRole"),
-      electronicSignature: checkedOf("electronicSignature"),
+      radiologistName: signature.radiologistName,
+      radiologistCrm: signature.radiologistCrm,
+      radiologistRole: signature.radiologistRole,
+      electronicSignature: signature.electronicSignature,
       indication: valueOf("indication"),
       extraInfo: valueOf("extraInfo"),
       aiRequest: aiRequestEl ? aiRequestEl.value.trim() : "",
@@ -1827,6 +2058,9 @@ function loadDraft() {
   Object.keys(fields).forEach((key) => {
     const el = document.getElementById(key);
     if (!el) return;
+    if (isRadiologistUser() && ["radiologistName", "radiologistCrm", "radiologistRole", "electronicSignature"].includes(key)) {
+      return;
+    }
     if (el instanceof HTMLInputElement && el.type === "checkbox") {
       el.checked = !!fields[key];
       return;
@@ -2058,12 +2292,32 @@ function bindAgeRecalculation(inputEl) {
   });
 }
 
+async function initializeAuthenticatedData() {
+  try {
+    await loadCustomTemplates();
+  } catch (err) {
+    customTemplateList = window.localStorage ? getStoredCustomTemplateList() : [];
+    updateTemplateStatus(customTemplateList, "Falha ao sincronizar templates com servidor.");
+    refreshSpecificTemplateOptions();
+  }
+
+  await loadSavedReports();
+  if (isAdminUser()) {
+    await fetchGlobalApiKeyStatus();
+    autoFetchModelsIfNeeded();
+  }
+  syncPatientAgeField();
+  ensureReport();
+}
+
 bindAgeRecalculation(studyDateEl);
 bindAgeRecalculation(patientBirthDateEl);
 
-applyTemplateBtn.addEventListener("click", applyTemplate);
+if (applyTemplateBtn) {
+  applyTemplateBtn.addEventListener("click", applyTemplate);
+}
 
-if (addTemplateBtn && templateFileInput) {
+if (addTemplateBtn) {
   addTemplateBtn.addEventListener("click", () => {
     createTemplateFromCurrentReport();
   });
@@ -2113,34 +2367,56 @@ if (generateAiBtn) {
   generateAiBtn.addEventListener("click", generateWithAi);
 }
 
-generateReportBtn.addEventListener("click", ensureReport);
+if (saveAiSettingsBtn) {
+  saveAiSettingsBtn.addEventListener("click", saveDefaultAiSettings);
+}
 
-clearFormBtn.addEventListener("click", () => {
-  if (window.confirm("Limpar todos os campos?")) {
-    clearForm();
-  }
+if (generateReportBtn) {
+  generateReportBtn.addEventListener("click", ensureReport);
+}
+
+if (clearFormBtn) {
+  clearFormBtn.addEventListener("click", () => {
+    if (window.confirm("Limpar todos os campos do formulário?")) {
+      clearForm();
+    }
+  });
+}
+
+clearFieldButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const targetId = button.dataset.clearTarget;
+    const target = targetId ? document.getElementById(targetId) : null;
+    if (!target) return;
+    target.value = "";
+    ensureReport();
+  });
 });
 
-copyReportBtn.addEventListener("click", async () => {
-  const report = ensureReport();
-  try {
-    await navigator.clipboard.writeText(report);
-    window.alert("Laudo copiado para a área de transferência.");
-  } catch (err) {
-    window.alert("Não foi possível copiar. Selecione e copie manualmente.");
-  }
-});
+if (copyReportBtn) {
+  copyReportBtn.addEventListener("click", async () => {
+    const report = ensureReport();
+    try {
+      await navigator.clipboard.writeText(report);
+      window.alert("Laudo copiado para a área de transferência.");
+    } catch (err) {
+      window.alert("Não foi possível copiar. Selecione e copie manualmente.");
+    }
+  });
+}
 
-downloadReportBtn.addEventListener("click", () => {
-  const report = ensureReport();
-  const blob = new Blob([report], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = "laudo_radiologia.txt";
-  anchor.click();
-  URL.revokeObjectURL(url);
-});
+if (downloadReportBtn) {
+  downloadReportBtn.addEventListener("click", () => {
+    const report = ensureReport();
+    const blob = new Blob([report], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "laudo_radiologia.txt";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  });
+}
 
 if (downloadPdfBtn) {
   downloadPdfBtn.addEventListener("click", async () => {
@@ -2156,9 +2432,17 @@ if (saveFinalReportBtn) {
   saveFinalReportBtn.addEventListener("click", saveFinalReport);
 }
 
-saveDraftBtn.addEventListener("click", saveDraft);
-loadDraftBtn.addEventListener("click", loadDraft);
-stopDictationBtn.addEventListener("click", stopDictation);
+if (saveDraftBtn) {
+  saveDraftBtn.addEventListener("click", saveDraft);
+}
+
+if (loadDraftBtn) {
+  loadDraftBtn.addEventListener("click", loadDraft);
+}
+
+if (stopDictationBtn) {
+  stopDictationBtn.addEventListener("click", stopDictation);
+}
 
 if (refreshSavedReportsBtn) {
   refreshSavedReportsBtn.addEventListener("click", loadSavedReports);
@@ -2173,12 +2457,45 @@ if (themeToggleBtn) {
   });
 }
 
+if (loginFormEl) {
+  loginFormEl.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const username = loginUsernameEl ? loginUsernameEl.value.trim() : "";
+    const password = loginPasswordEl ? loginPasswordEl.value : "";
+    if (!username || !password) {
+      if (loginStatusEl) loginStatusEl.textContent = "Informe login e senha.";
+      return;
+    }
+    if (loginStatusEl) loginStatusEl.textContent = "Entrando...";
+    try {
+      await submitLogin(username, password);
+      if (loginPasswordEl) loginPasswordEl.value = "";
+      await initializeAuthenticatedData();
+    } catch (err) {
+      if (loginStatusEl) loginStatusEl.textContent = err.message || "Falha ao autenticar.";
+    }
+  });
+}
+
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", async () => {
+    try {
+      await performLogout();
+    } catch (err) {
+      window.alert(err.message || "Não foi possível encerrar a sessão.");
+    }
+  });
+}
+
+if (manageUsersBtn) {
+  manageUsersBtn.addEventListener("click", openUserManagementWindow);
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && isTemplateModalOpen()) {
     closeTemplateModal();
   }
 });
-
 
 micButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -2196,41 +2513,46 @@ micButtons.forEach((btn) => {
   });
 });
 
-initTheme();
-loadCustomTemplates().catch(() => {
-  customTemplateList = window.localStorage ? getStoredCustomTemplateList() : [];
-  updateTemplateStatus(customTemplateList, "Falha ao sincronizar templates com servidor.");
-  refreshSpecificTemplateOptions();
-});
-loadSavedReports();
-loadAiPrefs();
-updateAiDefaults();
-fetchGlobalApiKeyStatus();
 if (refreshModelsBtn) {
   refreshModelsBtn.addEventListener("click", fetchModels);
 }
-autoFetchModelsIfNeeded();
-setupSpeech();
-setMode("ct");
-syncPatientAgeField();
 
 if (aiProviderEl) {
   aiProviderEl.addEventListener("change", () => {
     updateAiDefaults();
-    saveAiPrefs();
     autoFetchModelsIfNeeded();
     fetchGlobalApiKeyStatus();
   });
 }
 
 if (aiModelEl) {
-  aiModelEl.addEventListener("change", saveAiPrefs);
+  aiModelEl.addEventListener("change", updateAiLockHint);
 }
 
 if (aiBaseUrlEl) {
-  aiBaseUrlEl.addEventListener("change", saveAiPrefs);
+  aiBaseUrlEl.addEventListener("change", updateAiLockHint);
 }
 
 if (saveApiKeyBtn) {
   saveApiKeyBtn.addEventListener("click", saveGlobalApiKey);
 }
+
+async function initApp() {
+  initTheme();
+  setupSpeech();
+  setMode("ct");
+  loadAiPrefs();
+  updateAiDefaults();
+  syncPatientAgeField();
+
+  try {
+    const sessionData = await refreshSessionState();
+    if (sessionData && sessionData.authenticated) {
+      await initializeAuthenticatedData();
+    }
+  } catch (err) {
+    showLoginScreen("Não foi possível verificar a sessão atual.");
+  }
+}
+
+initApp();
