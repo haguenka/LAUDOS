@@ -189,6 +189,9 @@
             rows="3"
             placeholder='Ex: "Crie um laudo padrão de ressonância de crânio para adulto jovem" ou "Crie um laudo de tomografia de crânio para AVC".'
           ></textarea>
+          <div class="field-action-row">
+            <button class="btn danger btn-small clear-field-btn" data-clear-target="aiRequest" type="button">Apagar</button>
+          </div>
         </div>
       </section>
 
@@ -280,7 +283,10 @@
               <button class="mic-btn" data-target="examTitle" data-label="Título do exame" type="button">Ditado</button>
             </div>
             <textarea id="examTitle" rows="2" placeholder="Ex: TOMOGRAFIA COMPUTADORIZADA DOS SEIOS DA FACE"></textarea>
-            <button class="btn danger btn-small clear-field-btn" data-clear-target="examTitle" type="button">Apagar</button>
+            <div class="field-action-row">
+              <button class="btn ghost btn-small undo-field-btn" data-undo-target="examTitle" type="button">Desfazer</button>
+              <button class="btn danger btn-small clear-field-btn" data-clear-target="examTitle" type="button">Apagar</button>
+            </div>
           </div>
           <div class="section">
             <div class="section-header">
@@ -288,7 +294,10 @@
               <button class="mic-btn" data-target="technique" data-label="Técnica" type="button">Ditado</button>
             </div>
             <textarea id="technique" rows="6"></textarea>
-            <button class="btn danger btn-small clear-field-btn" data-clear-target="technique" type="button">Apagar</button>
+            <div class="field-action-row">
+              <button class="btn ghost btn-small undo-field-btn" data-undo-target="technique" type="button">Desfazer</button>
+              <button class="btn danger btn-small clear-field-btn" data-clear-target="technique" type="button">Apagar</button>
+            </div>
           </div>
           <div class="section">
             <div class="section-header">
@@ -296,7 +305,10 @@
               <button class="mic-btn" data-target="findings" data-label="Laudo" type="button">Ditado</button>
             </div>
             <textarea id="findings" rows="12"></textarea>
-            <button class="btn danger btn-small clear-field-btn" data-clear-target="findings" type="button">Apagar</button>
+            <div class="field-action-row">
+              <button class="btn ghost btn-small undo-field-btn" data-undo-target="findings" type="button">Desfazer</button>
+              <button class="btn danger btn-small clear-field-btn" data-clear-target="findings" type="button">Apagar</button>
+            </div>
           </div>
           <div class="section">
             <div class="section-header">
@@ -304,7 +316,10 @@
               <button class="mic-btn" data-target="impression" data-label="Impressão" type="button">Ditado</button>
             </div>
             <textarea id="impression" rows="6"></textarea>
-            <button class="btn danger btn-small clear-field-btn" data-clear-target="impression" type="button">Apagar</button>
+            <div class="field-action-row">
+              <button class="btn ghost btn-small undo-field-btn" data-undo-target="impression" type="button">Desfazer</button>
+              <button class="btn danger btn-small clear-field-btn" data-clear-target="impression" type="button">Apagar</button>
+            </div>
           </div>
           <div class="report-actions-stack">
             <button id="generateReport" class="btn primary" type="button">Gerar laudo</button>
