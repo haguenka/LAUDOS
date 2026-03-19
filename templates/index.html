@@ -76,7 +76,8 @@
         </div>
         <div class="toolbar-actions">
           <button id="applyTemplate" class="btn primary">Aplicar modelo</button>
-          <button id="addTemplate" class="btn ghost" type="button" title="Carregar template de laudo">Adicionar template</button>
+          <button id="addTemplate" class="btn ghost" type="button" title="Criar template com base no laudo digitado">Criar template do laudo</button>
+          <button id="importTemplate" class="btn ghost" type="button" title="Importar template de arquivo">Importar template</button>
           <input id="templateFileInput" type="file" accept=".txt,.doc,.docx,.pdf,.json,application/json" hidden />
           <button id="generateReport" class="btn">Gerar laudo</button>
           <button id="clearForm" class="btn ghost">Limpar</button>
@@ -225,11 +226,27 @@
           <div class="preview-actions">
             <button id="copyReport" class="btn">Copiar</button>
             <button id="downloadReport" class="btn">Baixar .txt</button>
+            <button id="downloadPdf" class="btn">Baixar PDF</button>
+            <button id="saveFinalReport" class="btn primary">Salvar finalizado</button>
             <button id="saveDraft" class="btn ghost">Salvar rascunho</button>
             <button id="loadDraft" class="btn ghost">Carregar</button>
           </div>
         </div>
         <pre id="reportOutput" class="report-output">Seu laudo aparecerá aqui.</pre>
+      </section>
+
+      <section class="card saved-reports card-animate">
+        <div class="preview-header">
+          <div>
+            <h2>Laudos finalizados salvos</h2>
+            <p class="subtitle">Os últimos laudos ficam disponíveis para reabrir e exportar novamente.</p>
+          </div>
+          <div class="preview-actions">
+            <button id="refreshSavedReports" class="btn ghost btn-small" type="button">Atualizar lista</button>
+          </div>
+        </div>
+        <p id="savedReportsStatus" class="toolbar-hint">Nenhum laudo finalizado salvo ainda.</p>
+        <div id="savedReportsList" class="saved-report-list"></div>
       </section>
     </main>
 
