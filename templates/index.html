@@ -150,12 +150,12 @@
               <input id="patientName" type="text" placeholder="Ex: Maria Silva" />
             </div>
             <div class="field">
-              <label for="patientId">ID</label>
-              <input id="patientId" type="text" placeholder="Ex: 000123" />
+              <label for="patientId">Same</label>
+              <input id="patientId" type="text" placeholder="Ex: 3717985" />
             </div>
             <div class="field">
               <label for="patientAge">Idade</label>
-              <input id="patientAge" type="text" placeholder="Ex: 45" />
+              <input id="patientAge" type="text" placeholder="Ex: 32A 5M" />
             </div>
             <div class="field">
               <label for="patientSex">Sexo</label>
@@ -171,8 +171,38 @@
               <input id="studyDate" type="date" />
             </div>
             <div class="field">
+              <label for="patientBirthDate">Data de nascimento</label>
+              <input id="patientBirthDate" type="date" />
+            </div>
+            <div class="field">
               <label for="referrer">Solicitante</label>
-              <input id="referrer" type="text" placeholder="Ex: Dr(a)." />
+              <input id="referrer" type="text" placeholder="Ex: ANA CAROLINA TELES" />
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header">
+              <h3>Assinatura do laudo</h3>
+            </div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="radiologistName">Nome do radiologista</label>
+                <input id="radiologistName" type="text" placeholder="Ex: Fernanda Miraldi Clemente" />
+              </div>
+              <div class="field">
+                <label for="radiologistCrm">CRM</label>
+                <input id="radiologistCrm" type="text" placeholder="Ex: 52977489" />
+              </div>
+              <div class="field">
+                <label for="radiologistRole">Cargo / especialidade</label>
+                <input id="radiologistRole" type="text" placeholder="Ex: Radiologista" />
+              </div>
+              <div class="field checkbox-field">
+                <label for="electronicSignature">Assinatura eletrônica</label>
+                <label class="checkbox-row">
+                  <input id="electronicSignature" type="checkbox" checked />
+                  <span>Aplicar assinatura eletrônica no PDF</span>
+                </label>
+              </div>
             </div>
           </div>
           <div class="section">
@@ -193,6 +223,17 @@
 
         <div class="card report card-animate">
           <h2>Corpo do laudo</h2>
+          <div class="section">
+            <div class="section-header">
+              <h3>Título do exame no PDF</h3>
+              <button class="mic-btn" data-target="examTitle" data-label="Título do exame">Ditado</button>
+            </div>
+            <textarea
+              id="examTitle"
+              rows="2"
+              placeholder="Ex: TOMOGRAFIA COMPUTADORIZADA DOS SEIOS DA FACE"
+            ></textarea>
+          </div>
           <div class="section">
             <div class="section-header">
               <h3>Técnica</h3>
