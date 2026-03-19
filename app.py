@@ -860,14 +860,18 @@ def _db_connect():
 
 
 def _ensure_table_columns(conn, table_name, column_definitions):
-    existing = {
-        str(row["name"]).strip().lower()
-        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    }
+    existing = _table_columns(conn, table_name)
     for column_name, sql_definition in column_definitions.items():
         if column_name.lower() in existing:
             continue
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {sql_definition}")
+
+
+def _table_columns(conn, table_name):
+    return {
+        str(row["name"]).strip().lower()
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
 
 
 def _default_base_url_for_provider(provider):
@@ -1176,6 +1180,45 @@ def _bootstrap_admin_user():
         )
 
 
+def _user_password_matches(conn, user_row, password):
+    if not user_row:
+        return False
+
+    provided_password = str(password or "")
+    row_keys = {str(key).strip().lower() for key in user_row.keys()}
+    password_hash = str(user_row["password_hash"] or "").strip() if "password_hash" in row_keys else ""
+    if password_hash and check_password_hash(password_hash, provided_password):
+        return True
+
+    legacy_plain_password = str(user_row["password"] or "") if "password" in row_keys else ""
+    if legacy_plain_password and legacy_plain_password == provided_password:
+        if "password_hash" in row_keys:
+            conn.execute(
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (generate_password_hash(provided_password), _now_iso_utc(), user_row["id"]),
+            )
+        return True
+    return False
+
+
+def _migrate_legacy_user_passwords(conn):
+    user_columns = _table_columns(conn, "users")
+    if "password" not in user_columns or "password_hash" not in user_columns:
+        return
+
+    rows = conn.execute(
+        "SELECT id, password, password_hash FROM users"
+    ).fetchall()
+    for row in rows:
+        legacy_password = str(row["password"] or "")
+        password_hash = str(row["password_hash"] or "").strip()
+        if legacy_password and not password_hash:
+            conn.execute(
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (generate_password_hash(legacy_password), _now_iso_utc(), row["id"]),
+            )
+
+
 def _init_templates_db():
     with _db_connect() as conn:
         conn.execute(
@@ -1255,6 +1298,21 @@ def _init_templates_db():
             )
             """
         )
+        _ensure_table_columns(
+            conn,
+            "users",
+            {
+                "username": "username TEXT NOT NULL DEFAULT ''",
+                "password_hash": "password_hash TEXT NOT NULL DEFAULT ''",
+                "role": "role TEXT NOT NULL DEFAULT 'radiologist'",
+                "full_name": "full_name TEXT NOT NULL DEFAULT ''",
+                "crm": "crm TEXT NOT NULL DEFAULT ''",
+                "subspecialty": "subspecialty TEXT NOT NULL DEFAULT 'Radiologista'",
+                "is_active": "is_active INTEGER NOT NULL DEFAULT 1",
+                "created_at": "created_at TEXT NOT NULL DEFAULT ''",
+                "updated_at": "updated_at TEXT NOT NULL DEFAULT ''",
+            },
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_role_active ON users (role, is_active)"
         )
@@ -1275,6 +1333,7 @@ def _init_templates_db():
                 "updated_by_user_id": "updated_by_user_id TEXT NOT NULL DEFAULT ''",
             },
         )
+        _migrate_legacy_user_passwords(conn)
 
 
 def _clean_template_payload(payload):
@@ -2242,8 +2301,9 @@ def login():
 
     with _db_connect() as conn:
         user = _get_user_by_username_with_connection(conn, username)
+        password_ok = _user_password_matches(conn, user, password)
 
-    if not user or not check_password_hash(user["password_hash"], password):
+    if not user or not password_ok:
         return jsonify({"error": "Login ou senha inválidos."}), 401
 
     session.clear()
