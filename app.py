@@ -11,7 +11,7 @@ import tempfile
 import uuid
 import zipfile
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html import escape
 from xml.etree import ElementTree
 
@@ -1038,6 +1038,50 @@ def _format_date_for_report(value):
     return raw
 
 
+def _parse_iso_date(value):
+    raw = _coerce_payload_text(value)
+    if not raw:
+        return None
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", raw)
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def _format_age_for_report(years, months):
+    if years < 0 or months < 0:
+        return ""
+    if years == 0:
+        return f"{months}M"
+    if months == 0:
+        return f"{years}A"
+    return f"{years}A {months}M"
+
+
+def _calculate_age_text(birth_date_value, study_date_value=""):
+    birth_date = _parse_iso_date(birth_date_value)
+    if not birth_date:
+        return ""
+
+    reference_date = _parse_iso_date(study_date_value) or date.today()
+    if reference_date < birth_date:
+        return ""
+
+    years = reference_date.year - birth_date.year
+    months = reference_date.month - birth_date.month
+    if reference_date.day < birth_date.day:
+        months -= 1
+    if months < 0:
+        years -= 1
+        months += 12
+    if years < 0:
+        return ""
+    return _format_age_for_report(years, months)
+
+
 def _default_exam_title(mode, region):
     mode_clean = _normalize_mode(mode) or "ct"
     region_clean = _normalize_region(region) or "cranio"
@@ -1076,7 +1120,7 @@ def _compose_report_text(mode, region, contrast, fields):
     exam_title = _coerce_payload_text(fields.get("examTitle")) or _default_exam_title(mode, region)
     patient_name = _coerce_payload_text(fields.get("patientName"))
     patient_id = _coerce_payload_text(fields.get("patientId"))
-    patient_age = _coerce_payload_text(fields.get("patientAge"))
+    patient_age = _calculate_age_text(fields.get("patientBirthDate"), fields.get("studyDate")) or _coerce_payload_text(fields.get("patientAge"))
     study_date = _format_date_for_report(fields.get("studyDate"))
     birth_date = _format_date_for_report(fields.get("patientBirthDate"))
     referrer = _coerce_payload_text(fields.get("referrer"))
@@ -1163,6 +1207,8 @@ def _clean_report_payload(payload):
         "findings": _coerce_payload_text(fields.get("findings")),
         "impression": _coerce_payload_text(fields.get("impression")),
     }
+    derived_age = _calculate_age_text(clean_fields["patientBirthDate"], clean_fields["studyDate"])
+    clean_fields["patientAge"] = derived_age or clean_fields["patientAge"]
     final_text = _coerce_payload_text(payload.get("finalText"))
     if not final_text:
         final_text = _compose_report_text(mode, region, contrast, clean_fields)
@@ -1219,6 +1265,8 @@ def _report_row_to_json(row):
         "findings": _coerce_payload_text(fields.get("findings") or row["findings"]),
         "impression": _coerce_payload_text(fields.get("impression") or row["impression"]),
     }
+    derived_age = _calculate_age_text(fields.get("patientBirthDate"), fields.get("studyDate"))
+    fields["patientAge"] = derived_age or fields["patientAge"]
     return {
         "id": row["id"],
         "mode": row["mode"],
@@ -1338,6 +1386,7 @@ def _build_report_pdf_bytes(payload):
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.lib.utils import ImageReader, simpleSplit
+    from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfgen import canvas as pdf_canvas
     from reportlab.platypus import BaseDocTemplate, Frame, KeepTogether, PageTemplate, Paragraph, Spacer, Table, TableStyle
 
@@ -1348,7 +1397,7 @@ def _build_report_pdf_bytes(payload):
     left_margin = 18 * mm
     right_margin = 18 * mm
     footer_reserved = 58 * mm
-    first_header_reserved = 86 * mm
+    first_header_reserved = 98 * mm
     later_header_reserved = 20 * mm
     footer_image_y = 8 * mm
     footer_image_height = 28 * mm
@@ -1392,6 +1441,7 @@ def _build_report_pdf_bytes(payload):
     exam_title = _coerce_payload_text(fields.get("examTitle")) or _default_exam_title(item["mode"], item["region"])
     study_date = _format_date_for_report(fields.get("studyDate"))
     birth_date = _format_date_for_report(fields.get("patientBirthDate"))
+    patient_age = _calculate_age_text(fields.get("patientBirthDate"), fields.get("studyDate")) or _coerce_payload_text(fields.get("patientAge"))
     disclaimer_text = (
         "Informamos que o exame, composto por laudo e imagens, deve ser apresentado ao médico solicitante "
         "para a avaliação e conduta. A Casa de Saúde São José não realiza contato com pacientes para "
@@ -1433,29 +1483,58 @@ def _build_report_pdf_bytes(payload):
             )
 
         if first_page:
-            canvas_obj.setFont("Helvetica-Bold", 8.4)
-            left_label_x = left_margin
-            left_value_x = left_margin + 18 * mm
-            right_label_x = page_width / 2 + 6 * mm
-            right_value_x = right_label_x + 11 * mm
-            y = page_height - 35 * mm
-            row_gap = 4.8 * mm
+            label_font = "Helvetica-Bold"
+            value_font = "Helvetica"
+            text_size = 8.4
+            line_height = 4.7 * mm
+            column_gap = 10 * mm
+            header_top = page_height - 37 * mm
+            content_width = page_width - left_margin - right_margin
+            column_width = (content_width - column_gap) / 2
+            left_column_x = left_margin
+            right_column_x = left_margin + column_width + column_gap
 
-            def _draw_pair(label_x, value_x, top_y, label, value):
-                if not value:
-                    return
-                canvas_obj.setFont("Helvetica-Bold", 8.4)
-                canvas_obj.drawString(label_x, top_y, label)
-                canvas_obj.setFont("Helvetica", 8.4)
-                canvas_obj.drawString(value_x, top_y, value)
+            def _draw_header_field(column_x, top_y, label, value):
+                clean_value = _coerce_payload_text(value)
+                if not clean_value:
+                    return 0
 
-            _draw_pair(left_label_x, left_value_x, y, "Paciente:", _coerce_payload_text(fields.get("patientName")))
-            _draw_pair(left_label_x, left_value_x, y - row_gap, "Data do Exame:", study_date)
-            _draw_pair(left_label_x, left_value_x, y - (2 * row_gap), "Médico solicitante:", _coerce_payload_text(fields.get("referrer")))
+                label_width = pdfmetrics.stringWidth(label, label_font, text_size)
+                value_x = column_x + label_width + (2.2 * mm)
+                value_width = max(18 * mm, column_width - (value_x - column_x))
+                wrapped_lines = simpleSplit(clean_value, value_font, text_size, value_width) or [clean_value]
 
-            _draw_pair(right_label_x, right_value_x, y, "Same:", _coerce_payload_text(fields.get("patientId")))
-            _draw_pair(right_label_x, right_value_x, y - row_gap, "Idade:", _coerce_payload_text(fields.get("patientAge")))
-            _draw_pair(right_label_x, right_value_x, y - (2 * row_gap), "Data de Nascimento:", birth_date)
+                canvas_obj.setFont(label_font, text_size)
+                canvas_obj.drawString(column_x, top_y, label)
+                canvas_obj.setFont(value_font, text_size)
+                canvas_obj.drawString(value_x, top_y, wrapped_lines[0])
+
+                for index, line in enumerate(wrapped_lines[1:], start=1):
+                    canvas_obj.drawString(value_x, top_y - (index * line_height), line)
+
+                return line_height * max(1, len(wrapped_lines))
+
+            header_rows = [
+                (
+                    ("Paciente:", _coerce_payload_text(fields.get("patientName"))),
+                    ("Same:", _coerce_payload_text(fields.get("patientId"))),
+                ),
+                (
+                    ("Data do Exame:", study_date),
+                    ("Idade:", patient_age),
+                ),
+                (
+                    ("Médico solicitante:", _coerce_payload_text(fields.get("referrer"))),
+                    ("Data de Nascimento:", birth_date),
+                ),
+            ]
+
+            current_y = header_top
+            for left_field, right_field in header_rows:
+                left_height = _draw_header_field(left_column_x, current_y, left_field[0], left_field[1])
+                right_height = _draw_header_field(right_column_x, current_y, right_field[0], right_field[1])
+                consumed_height = max(left_height, right_height, line_height)
+                current_y -= consumed_height + (1.5 * mm)
 
         canvas_obj.restoreState()
 
