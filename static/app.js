@@ -521,6 +521,72 @@ function formatDisplayDate(value) {
   return raw;
 }
 
+function parseIsoDate(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const parsed = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== Number(match[1]) ||
+    parsed.getMonth() !== Number(match[2]) - 1 ||
+    parsed.getDate() !== Number(match[3])
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
+function formatCalculatedAge(years, months) {
+  if (years < 0 || months < 0) return "";
+  if (years === 0) {
+    return `${months}M`;
+  }
+  if (months === 0) {
+    return `${years}A`;
+  }
+  return `${years}A ${months}M`;
+}
+
+function calculatePatientAgeValue(birthDateValue, studyDateValue) {
+  const birthDate = parseIsoDate(birthDateValue);
+  if (!birthDate) return "";
+
+  const referenceDate = parseIsoDate(studyDateValue) || new Date();
+  if (referenceDate < birthDate) return "";
+
+  let years = referenceDate.getFullYear() - birthDate.getFullYear();
+  let months = referenceDate.getMonth() - birthDate.getMonth();
+  const days = referenceDate.getDate() - birthDate.getDate();
+
+  if (days < 0) {
+    months -= 1;
+  }
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+  if (years < 0) return "";
+
+  return formatCalculatedAge(years, months);
+}
+
+function resolvePatientAge() {
+  const birthDateValue = valueOf("patientBirthDate");
+  const studyDateValue = valueOf("studyDate");
+  const derived = calculatePatientAgeValue(birthDateValue, studyDateValue);
+  if (derived) return derived;
+  return birthDateValue ? "" : valueOf("patientAge");
+}
+
+function syncPatientAgeField() {
+  const ageEl = document.getElementById("patientAge");
+  if (!ageEl) return "";
+  const derivedAge = resolvePatientAge();
+  ageEl.value = derivedAge;
+  return derivedAge;
+}
+
 function buildExamTitle(mode, regionKey) {
   const titles = {
     ct: {
@@ -573,6 +639,7 @@ function buildTechnique(mode, regionKey, contrastKey) {
 }
 
 function applyTemplate() {
+  const examTitleEl = document.getElementById("examTitle");
   const techniqueEl = document.getElementById("technique");
   const findingsEl = document.getElementById("findings");
   const impressionEl = document.getElementById("impression");
@@ -602,6 +669,11 @@ function applyTemplate() {
     template.technique || buildTechnique(state.mode, regionKey, contrastSelect.value);
   findingsEl.value = template.findings || "";
   impressionEl.value = template.impression || "";
+  if (examTitleEl) {
+    examTitleEl.value =
+      (selectedTemplate && selectedTemplate.title ? selectedTemplate.title : "") ||
+      buildExamTitle(state.mode, regionKey);
+  }
 }
 
 function normalizeTemplateTitle(filename) {
@@ -702,9 +774,10 @@ function createTemplateFromCurrentReport() {
   const region = regionSelect ? regionSelect.value : "cranio";
   const modeLabel = state.mode === "ct" ? "TC" : "RM";
   const regionLabel = regionLabels[region] || region;
+  const currentExamTitle = valueOf("examTitle");
 
   openTemplateModal({
-    filename: `${modeLabel} ${regionLabel} - template`,
+    filename: currentExamTitle || `${modeLabel} ${regionLabel} - template`,
     mode: state.mode,
     region,
     text: content,
@@ -1388,7 +1461,7 @@ function buildReport() {
   const examTitle = valueOf("examTitle") || buildExamTitle(state.mode, regionSelect.value);
   const patientName = valueOf("patientName");
   const patientId = valueOf("patientId");
-  const patientAge = valueOf("patientAge");
+  const patientAge = syncPatientAgeField();
   const studyDate = formatDisplayDate(valueOf("studyDate"));
   const birthDate = formatDisplayDate(valueOf("patientBirthDate"));
   const referrer = valueOf("referrer");
@@ -1466,7 +1539,7 @@ function collectReportPayload(existingId = "") {
       examTitle: valueOf("examTitle"),
       patientName: valueOf("patientName"),
       patientId: valueOf("patientId"),
-      patientAge: valueOf("patientAge"),
+      patientAge: syncPatientAgeField(),
       patientSex: valueOf("patientSex"),
       studyDate: valueOf("studyDate"),
       patientBirthDate: valueOf("patientBirthDate"),
@@ -1545,6 +1618,7 @@ function populateFormFromSavedReport(report) {
     el.value = fields[key] || "";
   });
 
+  syncPatientAgeField();
   ensureReport();
 }
 
@@ -1699,6 +1773,7 @@ function clearForm() {
   if (electronicSignatureEl instanceof HTMLInputElement) {
     electronicSignatureEl.checked = true;
   }
+  syncPatientAgeField();
   reportOutputEl.textContent = "Seu laudo aparecerá aqui.";
   state.currentReportId = "";
 }
@@ -1712,7 +1787,7 @@ function saveDraft() {
       examTitle: valueOf("examTitle"),
       patientName: valueOf("patientName"),
       patientId: valueOf("patientId"),
-      patientAge: valueOf("patientAge"),
+      patientAge: syncPatientAgeField(),
       patientSex: valueOf("patientSex"),
       studyDate: valueOf("studyDate"),
       patientBirthDate: valueOf("patientBirthDate"),
@@ -1759,6 +1834,7 @@ function loadDraft() {
     el.value = fields[key];
   });
 
+  syncPatientAgeField();
   ensureReport();
 }
 
@@ -1969,6 +2045,22 @@ if (regionSelect) {
   });
 }
 
+const studyDateEl = document.getElementById("studyDate");
+const patientBirthDateEl = document.getElementById("patientBirthDate");
+
+function bindAgeRecalculation(inputEl) {
+  if (!inputEl) return;
+  inputEl.addEventListener("input", () => {
+    syncPatientAgeField();
+  });
+  inputEl.addEventListener("change", () => {
+    syncPatientAgeField();
+  });
+}
+
+bindAgeRecalculation(studyDateEl);
+bindAgeRecalculation(patientBirthDateEl);
+
 applyTemplateBtn.addEventListener("click", applyTemplate);
 
 if (addTemplateBtn && templateFileInput) {
@@ -2120,6 +2212,7 @@ if (refreshModelsBtn) {
 autoFetchModelsIfNeeded();
 setupSpeech();
 setMode("ct");
+syncPatientAgeField();
 
 if (aiProviderEl) {
   aiProviderEl.addEventListener("change", () => {
