@@ -34,6 +34,8 @@ ALLOWED_TEMPLATE_REGIONS = {
 }
 API_KEY_PROVIDERS = {"openai", "gemini"}
 REPORT_CONTRAST_OPTIONS = {"sem", "com", "misto"}
+REPORT_LOGO_PATH = os.path.join(app.static_folder, "report_logo.png")
+REPORT_FOOTER_BAND_PATH = os.path.join(app.static_folder, "report_footer_band.png")
 
 
 @app.route("/")
@@ -122,7 +124,7 @@ def _extract_sections_from_text(text):
         if "TÉCNICA" in upper or "TECNICA" in upper or upper.startswith("TECHNIQUE"):
             current = "technique"
             continue
-        if "ACHADOS" in upper or "FINDINGS" in upper or upper.startswith("LAUDO"):
+        if "ACHADOS" in upper or "FINDINGS" in upper or "ANÁLISE" in upper or "ANALISE" in upper or upper.startswith("LAUDO"):
             current = "findings"
             continue
         if "IMPRESSÃO" in upper or "IMPRESSAO" in upper or "IMPRESSION" in upper:
@@ -1017,58 +1019,110 @@ def _coerce_payload_text(value):
     return str(value).strip()
 
 
-def _compose_report_text(mode, region, contrast, fields):
-    lines = []
+def _coerce_payload_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = _coerce_payload_text(value).lower()
+    return normalized in {"1", "true", "sim", "yes", "on"}
+
+
+def _format_date_for_report(value):
+    raw = _coerce_payload_text(value)
+    if not raw:
+        return ""
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", raw)
+    if match:
+        return f"{match.group(3)}/{match.group(2)}/{match.group(1)}"
+    return raw
+
+
+def _default_exam_title(mode, region):
     mode_clean = _normalize_mode(mode) or "ct"
     region_clean = _normalize_region(region) or "cranio"
-    mode_label = "TOMOGRAFIA COMPUTADORIZADA" if mode_clean == "ct" else "RESSONÂNCIA MAGNÉTICA"
-    region_label = _ui_region_label(region_clean)
-    contrast_label = _contrast_label(mode_clean, contrast)
+    titles = {
+        "ct": {
+            "cranio": "TOMOGRAFIA COMPUTADORIZADA DO CRÂNIO",
+            "pescoco": "TOMOGRAFIA COMPUTADORIZADA DO PESCOÇO",
+            "torax": "TOMOGRAFIA COMPUTADORIZADA DO TÓRAX",
+            "abdomen": "TOMOGRAFIA COMPUTADORIZADA DO ABDOME",
+            "abdome_pelve": "TOMOGRAFIA COMPUTADORIZADA DE ABDOME E PELVE",
+            "coluna": "TOMOGRAFIA COMPUTADORIZADA DA COLUNA",
+            "pelve": "TOMOGRAFIA COMPUTADORIZADA DA PELVE",
+            "osteo": "TOMOGRAFIA COMPUTADORIZADA DO SEGMENTO ÓSTEO-ARTICULAR",
+            "vascular": "TOMOGRAFIA COMPUTADORIZADA VASCULAR",
+        },
+        "mri": {
+            "cranio": "RESSONÂNCIA MAGNÉTICA DO CRÂNIO",
+            "pescoco": "RESSONÂNCIA MAGNÉTICA DO PESCOÇO",
+            "torax": "RESSONÂNCIA MAGNÉTICA DO TÓRAX",
+            "abdomen": "RESSONÂNCIA MAGNÉTICA DO ABDOME",
+            "abdome_pelve": "RESSONÂNCIA MAGNÉTICA DE ABDOME E PELVE",
+            "coluna": "RESSONÂNCIA MAGNÉTICA DA COLUNA",
+            "pelve": "RESSONÂNCIA MAGNÉTICA DA PELVE",
+            "osteo": "RESSONÂNCIA MAGNÉTICA DO SEGMENTO ÓSTEO-ARTICULAR",
+            "vascular": "RESSONÂNCIA MAGNÉTICA VASCULAR",
+        },
+    }
+    return titles.get(mode_clean, {}).get(region_clean) or (
+        ("TOMOGRAFIA COMPUTADORIZADA " if mode_clean == "ct" else "RESSONÂNCIA MAGNÉTICA ")
+        + _ui_region_label(region_clean).upper()
+    )
 
+
+def _compose_report_text(mode, region, contrast, fields):
+    lines = []
+    exam_title = _coerce_payload_text(fields.get("examTitle")) or _default_exam_title(mode, region)
     patient_name = _coerce_payload_text(fields.get("patientName"))
     patient_id = _coerce_payload_text(fields.get("patientId"))
     patient_age = _coerce_payload_text(fields.get("patientAge"))
-    patient_sex = _coerce_payload_text(fields.get("patientSex"))
-    study_date = _coerce_payload_text(fields.get("studyDate"))
+    study_date = _format_date_for_report(fields.get("studyDate"))
+    birth_date = _format_date_for_report(fields.get("patientBirthDate"))
     referrer = _coerce_payload_text(fields.get("referrer"))
+    radiologist_name = _coerce_payload_text(fields.get("radiologistName"))
+    radiologist_crm = _coerce_payload_text(fields.get("radiologistCrm"))
+    radiologist_role = _coerce_payload_text(fields.get("radiologistRole"))
+    electronic_signature = _coerce_payload_bool(fields.get("electronicSignature"))
     indication = _coerce_payload_text(fields.get("indication"))
     extra_info = _coerce_payload_text(fields.get("extraInfo"))
     technique = _coerce_payload_text(fields.get("technique"))
     findings = _coerce_payload_text(fields.get("findings"))
     impression = _coerce_payload_text(fields.get("impression"))
 
-    lines.append(mode_label)
+    lines.append(exam_title)
     lines.append("")
     if patient_name:
         lines.append(f"Paciente: {patient_name}")
-    if patient_id:
-        lines.append(f"ID: {patient_id}")
-    if patient_age or patient_sex:
-        pieces = []
-        if patient_age:
-            pieces.append(f"Idade: {patient_age}")
-        if patient_sex:
-            pieces.append(f"Sexo: {patient_sex}")
-        lines.append(" | ".join(pieces))
     if study_date:
-        lines.append(f"Data do exame: {study_date}")
+        lines.append(f"Data do Exame: {study_date}")
     if referrer:
-        lines.append(f"Solicitante: {referrer}")
-    lines.append(f"Modalidade: {'Tomografia' if mode_clean == 'ct' else 'Ressonância'}")
-    lines.append(f"Região: {region_label}")
-    lines.append(f"Contraste: {contrast_label}")
+        lines.append(f"Médico solicitante: {referrer}")
+    if patient_id:
+        lines.append(f"Same: {patient_id}")
+    if patient_age:
+        lines.append(f"Idade: {patient_age}")
+    if birth_date:
+        lines.append(f"Data de Nascimento: {birth_date}")
     lines.append("")
     if indication:
         lines.extend(["INDICAÇÃO CLÍNICA:", indication, ""])
     if extra_info:
         lines.extend(["INFORMAÇÕES ADICIONAIS:", extra_info, ""])
     if technique:
-        lines.extend(["TÉCNICA:", technique, ""])
+        lines.extend(["Técnica:", technique, ""])
     if findings:
-        lines.extend(["LAUDO:", findings, ""])
+        lines.extend(["Análise:", findings, ""])
     if impression:
-        lines.extend(["IMPRESSÃO:", impression, ""])
-    lines.extend(["----", "Assinatura: ________________________________________"])
+        lines.extend(["Impressão diagnóstica:", impression, ""])
+    if radiologist_name or radiologist_crm:
+        lines.append("Assinatura eletrônica:" if electronic_signature else "Radiologista responsável:")
+        if radiologist_name:
+            lines.append(f"Dr(a).: {radiologist_name}")
+        if radiologist_role:
+            lines.append(radiologist_role)
+        if radiologist_crm:
+            lines.append(f"CRM {radiologist_crm}")
     return "\n".join(lines).strip()
 
 
@@ -1090,12 +1144,18 @@ def _clean_report_payload(payload):
     status = str(payload.get("status", "finalized") or "finalized").strip().lower() or "finalized"
 
     clean_fields = {
+        "examTitle": _coerce_payload_text(fields.get("examTitle")),
         "patientName": _coerce_payload_text(fields.get("patientName")),
         "patientId": _coerce_payload_text(fields.get("patientId")),
         "patientAge": _coerce_payload_text(fields.get("patientAge")),
         "patientSex": _coerce_payload_text(fields.get("patientSex")),
         "studyDate": _coerce_payload_text(fields.get("studyDate")),
+        "patientBirthDate": _coerce_payload_text(fields.get("patientBirthDate")),
         "referrer": _coerce_payload_text(fields.get("referrer")),
+        "radiologistName": _coerce_payload_text(fields.get("radiologistName")),
+        "radiologistCrm": _coerce_payload_text(fields.get("radiologistCrm")),
+        "radiologistRole": _coerce_payload_text(fields.get("radiologistRole")),
+        "electronicSignature": _coerce_payload_bool(fields.get("electronicSignature")),
         "indication": _coerce_payload_text(fields.get("indication")),
         "extraInfo": _coerce_payload_text(fields.get("extraInfo")),
         "aiRequest": _coerce_payload_text(fields.get("aiRequest")),
@@ -1140,12 +1200,18 @@ def _report_row_to_json(row):
     if not isinstance(fields, dict):
         fields = {}
     fields = {
+        "examTitle": _coerce_payload_text(fields.get("examTitle")),
         "patientName": _coerce_payload_text(fields.get("patientName") or row["patient_name"]),
         "patientId": _coerce_payload_text(fields.get("patientId") or row["patient_id"]),
         "patientAge": _coerce_payload_text(fields.get("patientAge") or row["patient_age"]),
         "patientSex": _coerce_payload_text(fields.get("patientSex") or row["patient_sex"]),
         "studyDate": _coerce_payload_text(fields.get("studyDate") or row["study_date"]),
+        "patientBirthDate": _coerce_payload_text(fields.get("patientBirthDate")),
         "referrer": _coerce_payload_text(fields.get("referrer") or row["referrer"]),
+        "radiologistName": _coerce_payload_text(fields.get("radiologistName")),
+        "radiologistCrm": _coerce_payload_text(fields.get("radiologistCrm")),
+        "radiologistRole": _coerce_payload_text(fields.get("radiologistRole")),
+        "electronicSignature": _coerce_payload_bool(fields.get("electronicSignature")),
         "indication": _coerce_payload_text(fields.get("indication") or row["indication"]),
         "extraInfo": _coerce_payload_text(fields.get("extraInfo") or row["extra_info"]),
         "aiRequest": _coerce_payload_text(fields.get("aiRequest")),
@@ -1257,61 +1323,276 @@ def _report_filename(payload):
         return "laudo-radiologia.pdf"
     fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
     patient_name = _coerce_payload_text(fields.get("patientName"))
+    exam_title = _coerce_payload_text(fields.get("examTitle"))
     study_date = _coerce_payload_text(fields.get("studyDate"))
-    base_name = patient_name or f"{_normalize_mode(payload.get('mode')) or 'ct'}-{_normalize_region(payload.get('region')) or 'cranio'}"
+    base_name = patient_name or exam_title or f"{_normalize_mode(payload.get('mode')) or 'ct'}-{_normalize_region(payload.get('region')) or 'cranio'}"
     if study_date:
         return f"{_slugify_filename(base_name)}-{_slugify_filename(study_date)}.pdf"
     return f"{_slugify_filename(base_name)}.pdf"
 
 
 def _build_report_pdf_bytes(payload):
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.lib.utils import ImageReader, simpleSplit
+    from reportlab.pdfgen import canvas as pdf_canvas
+    from reportlab.platypus import BaseDocTemplate, Frame, KeepTogether, PageTemplate, Paragraph, Spacer, Table, TableStyle
 
     item = _clean_report_payload(payload)
+    fields = item["fields"]
     buffer = io.BytesIO()
-    document = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        topMargin=16 * mm,
-        bottomMargin=16 * mm,
-        title="Laudo Radiológico",
-    )
+    page_width, page_height = A4
+    left_margin = 18 * mm
+    right_margin = 18 * mm
+    footer_reserved = 58 * mm
+    first_header_reserved = 86 * mm
+    later_header_reserved = 20 * mm
+    footer_image_y = 8 * mm
+    footer_image_height = 28 * mm
+    footer_image_width = page_width - left_margin - right_margin
+    footer_image_x = left_margin
 
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         "ReportTitle",
         parent=styles["Heading1"],
         fontName="Helvetica-Bold",
-        fontSize=13,
+        fontSize=13.5,
         leading=16,
-        spaceAfter=8,
+        alignment=TA_CENTER,
+        spaceAfter=10,
     )
-    body_style = ParagraphStyle(
-        "ReportBody",
+    section_style = ParagraphStyle(
+        "SectionStyle",
         parent=styles["BodyText"],
         fontName="Helvetica",
         fontSize=10.5,
         leading=14,
-        spaceAfter=6,
+        alignment=TA_JUSTIFY,
+        spaceAfter=8,
+    )
+    signature_style = ParagraphStyle(
+        "SignatureStyle",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=9.5,
+        leading=12,
+        alignment=TA_RIGHT,
+    )
+    signature_label_style = ParagraphStyle(
+        "SignatureLabelStyle",
+        parent=signature_style,
+        fontName="Helvetica-Bold",
+        spaceAfter=3,
     )
 
-    story = []
-    blocks = re.split(r"\n\s*\n", item["final_text"])
-    for index, block in enumerate(blocks):
-        safe_block = escape(block).replace("\n", "<br/>")
-        if not safe_block.strip():
-            continue
-        style = title_style if index == 0 else body_style
-        story.append(Paragraph(safe_block, style))
-        if index < len(blocks) - 1:
-            story.append(Spacer(1, 2))
+    exam_title = _coerce_payload_text(fields.get("examTitle")) or _default_exam_title(item["mode"], item["region"])
+    study_date = _format_date_for_report(fields.get("studyDate"))
+    birth_date = _format_date_for_report(fields.get("patientBirthDate"))
+    disclaimer_text = (
+        "Informamos que o exame, composto por laudo e imagens, deve ser apresentado ao médico solicitante "
+        "para a avaliação e conduta. A Casa de Saúde São José não realiza contato com pacientes para "
+        "agendamento de consultas baseado no laudo do exame realizado."
+    )
+    electronic_signature = _coerce_payload_bool(fields.get("electronicSignature"))
+    signature_lines = []
+    radiologist_name = _coerce_payload_text(fields.get("radiologistName"))
+    raw_radiologist_role = _coerce_payload_text(fields.get("radiologistRole"))
+    radiologist_crm = _coerce_payload_text(fields.get("radiologistCrm"))
+    has_signature_identity = bool(radiologist_name or radiologist_crm or raw_radiologist_role)
+    radiologist_role = raw_radiologist_role or ("Radiologista" if has_signature_identity else "")
+    if radiologist_name:
+        signature_lines.append(f"Dr(a).: {radiologist_name}")
+    if radiologist_role:
+        signature_lines.append(radiologist_role)
+    if radiologist_crm:
+        signature_lines.append(f"CRM {radiologist_crm}")
+    if electronic_signature and has_signature_identity:
+        signature_lines.append(datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
 
-    document.build(story)
+    logo_reader = ImageReader(REPORT_LOGO_PATH) if os.path.exists(REPORT_LOGO_PATH) else None
+    footer_reader = ImageReader(REPORT_FOOTER_BAND_PATH) if os.path.exists(REPORT_FOOTER_BAND_PATH) else None
+
+    def _draw_page_header(canvas_obj, first_page=False):
+        canvas_obj.saveState()
+        if logo_reader:
+            logo_width = 55 * mm if first_page else 38 * mm
+            logo_height = 17 * mm if first_page else 12 * mm
+            logo_y = page_height - (26 * mm if first_page else 16 * mm)
+            canvas_obj.drawImage(
+                logo_reader,
+                left_margin,
+                logo_y,
+                width=logo_width,
+                height=logo_height,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+
+        if first_page:
+            canvas_obj.setFont("Helvetica-Bold", 8.4)
+            left_label_x = left_margin
+            left_value_x = left_margin + 18 * mm
+            right_label_x = page_width / 2 + 6 * mm
+            right_value_x = right_label_x + 11 * mm
+            y = page_height - 35 * mm
+            row_gap = 4.8 * mm
+
+            def _draw_pair(label_x, value_x, top_y, label, value):
+                if not value:
+                    return
+                canvas_obj.setFont("Helvetica-Bold", 8.4)
+                canvas_obj.drawString(label_x, top_y, label)
+                canvas_obj.setFont("Helvetica", 8.4)
+                canvas_obj.drawString(value_x, top_y, value)
+
+            _draw_pair(left_label_x, left_value_x, y, "Paciente:", _coerce_payload_text(fields.get("patientName")))
+            _draw_pair(left_label_x, left_value_x, y - row_gap, "Data do Exame:", study_date)
+            _draw_pair(left_label_x, left_value_x, y - (2 * row_gap), "Médico solicitante:", _coerce_payload_text(fields.get("referrer")))
+
+            _draw_pair(right_label_x, right_value_x, y, "Same:", _coerce_payload_text(fields.get("patientId")))
+            _draw_pair(right_label_x, right_value_x, y - row_gap, "Idade:", _coerce_payload_text(fields.get("patientAge")))
+            _draw_pair(right_label_x, right_value_x, y - (2 * row_gap), "Data de Nascimento:", birth_date)
+
+        canvas_obj.restoreState()
+
+    def _draw_page_footer(canvas_obj):
+        canvas_obj.saveState()
+        disclaimer_y = footer_image_y + footer_image_height + 18 * mm
+        canvas_obj.setFont("Helvetica-BoldOblique", 8.2)
+        disclaimer_lines = simpleSplit(disclaimer_text, "Helvetica-BoldOblique", 8.2, page_width - left_margin - right_margin)
+        for index, line in enumerate(disclaimer_lines):
+            canvas_obj.drawString(left_margin, disclaimer_y - (index * 4.4 * mm), line)
+
+        if footer_reader:
+            canvas_obj.drawImage(
+                footer_reader,
+                footer_image_x,
+                footer_image_y,
+                width=footer_image_width,
+                height=footer_image_height,
+                preserveAspectRatio=False,
+                mask="auto",
+            )
+        canvas_obj.restoreState()
+
+    def _draw_page(canvas_obj, _doc, first_page=False):
+        _draw_page_header(canvas_obj, first_page=first_page)
+        _draw_page_footer(canvas_obj)
+
+    class NumberedCanvas(pdf_canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_page_states = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            total_pages = len(self._saved_page_states)
+            for page_number, state in enumerate(self._saved_page_states, start=1):
+                self.__dict__.update(state)
+                self._draw_page_number_overlay(page_number, total_pages)
+                pdf_canvas.Canvas.showPage(self)
+            pdf_canvas.Canvas.save(self)
+
+        def _draw_page_number_overlay(self, page_number, total_pages):
+            self.saveState()
+            overlay_x = page_width - right_margin - 12 * mm
+            overlay_y = footer_image_y + 19 * mm
+            self.setFillColor(colors.white)
+            self.rect(overlay_x, overlay_y, 14 * mm, 6 * mm, fill=1, stroke=0)
+            self.setFillColor(colors.black)
+            self.setFont("Helvetica", 8.5)
+            self.drawRightString(overlay_x + 13 * mm, overlay_y + 1.6 * mm, f"{page_number}/{total_pages}")
+            if electronic_signature and signature_lines and page_number == total_pages:
+                self.setFont("Helvetica-Bold", 9.2)
+                self.drawCentredString(page_width / 2, footer_image_y + footer_image_height + 26 * mm, "Este laudo foi assinado eletronicamente.")
+            self.restoreState()
+
+    document = BaseDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=left_margin,
+        rightMargin=right_margin,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+        title=exam_title,
+    )
+
+    first_frame = Frame(
+        left_margin,
+        footer_reserved,
+        page_width - left_margin - right_margin,
+        page_height - footer_reserved - first_header_reserved,
+        id="first-frame",
+    )
+    later_frame = Frame(
+        left_margin,
+        footer_reserved,
+        page_width - left_margin - right_margin,
+        page_height - footer_reserved - later_header_reserved,
+        id="later-frame",
+    )
+    document.addPageTemplates(
+        [
+            PageTemplate(
+                id="First",
+                frames=[first_frame],
+                onPage=lambda c, d: _draw_page(c, d, first_page=True),
+                autoNextPageTemplate="Later",
+            ),
+            PageTemplate(id="Later", frames=[later_frame], onPage=lambda c, d: _draw_page(c, d, first_page=False)),
+        ]
+    )
+
+    def _section_html(label, text):
+        content = _coerce_payload_text(text)
+        if not content:
+            return ""
+        return f"<b>{escape(label)}</b><br/>{escape(content).replace(chr(10), '<br/>')}"
+
+    story = []
+    story.append(Paragraph(escape(exam_title), title_style))
+    if _coerce_payload_text(fields.get("indication")):
+        story.append(Paragraph(_section_html("Indicação clínica:", fields.get("indication")), section_style))
+    if _coerce_payload_text(fields.get("extraInfo")):
+        story.append(Paragraph(_section_html("Informações adicionais:", fields.get("extraInfo")), section_style))
+    if _coerce_payload_text(fields.get("technique")):
+        story.append(Paragraph(_section_html("Técnica:", fields.get("technique")), section_style))
+    if _coerce_payload_text(fields.get("findings")):
+        story.append(Paragraph(_section_html("Análise:", fields.get("findings")), section_style))
+    if _coerce_payload_text(fields.get("impression")):
+        story.append(Paragraph(_section_html("Impressão diagnóstica:", fields.get("impression")), section_style))
+    if not any(
+        _coerce_payload_text(fields.get(key))
+        for key in ("indication", "extraInfo", "technique", "findings", "impression")
+    ):
+        story.append(Paragraph(escape(item["final_text"]).replace("\n", "<br/>"), section_style))
+
+    if signature_lines:
+        signature_flowables = [Spacer(1, 8 * mm), Paragraph("Assinatura", signature_label_style)]
+        signature_text = "<br/>".join(escape(line) for line in signature_lines)
+        signature_table = Table([[Paragraph(signature_text, signature_style)]], colWidths=[72 * mm], hAlign="RIGHT")
+        signature_table.setStyle(
+            TableStyle(
+                [
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        signature_flowables.append(signature_table)
+        story.append(KeepTogether(signature_flowables))
+
+    document.build(story, canvasmaker=NumberedCanvas)
     buffer.seek(0)
     return buffer
 
