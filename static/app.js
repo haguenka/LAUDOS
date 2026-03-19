@@ -13,6 +13,7 @@
 };
 
 const themeKey = "radiologiaTheme";
+const reportColumnWidthKey = "radiologiaReportColumnWidth";
 
 const regionLabels = {
   cranio: "Crânio",
@@ -189,6 +190,8 @@ const aiAdminControlsEl = document.getElementById("aiAdminControls");
 const signatureSectionEl = document.getElementById("signatureSection");
 const clearFieldButtons = document.querySelectorAll(".clear-field-btn");
 const examTitleEl = document.getElementById("examTitle");
+const reportColumnWidthControlEl = document.getElementById("reportColumnWidthControl");
+const reportColumnWidthValueEl = document.getElementById("reportColumnWidthValue");
 
 const draftKey = "radiologiaLaudoDraft";
 const customTemplatesKey = "radiologiaCustomTemplates";
@@ -529,7 +532,7 @@ function updateAiLockHint() {
     }
     return;
   }
-  aiLockHintEl.textContent = `Usando a IA padrão definida pelo administrador. ${providerLabel}. ${modelLabel}.`;
+  aiLockHintEl.textContent = "Usando a IA padrão definida pelo administrador.";
 }
 
 function applyAiSettings(settings) {
@@ -691,6 +694,29 @@ function initTheme() {
   const prefersDark =
     window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   applyTheme(prefersDark ? "dark" : "light");
+}
+
+function clampReportColumnWidth(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 54;
+  return Math.min(70, Math.max(46, Math.round(parsed)));
+}
+
+function applyReportColumnWidth(value) {
+  const clamped = clampReportColumnWidth(value);
+  document.documentElement.style.setProperty("--report-column-width", `${clamped}%`);
+  if (reportColumnWidthControlEl) {
+    reportColumnWidthControlEl.value = String(clamped);
+  }
+  if (reportColumnWidthValueEl) {
+    reportColumnWidthValueEl.textContent = `${clamped}%`;
+  }
+  return clamped;
+}
+
+function initReportColumnWidth() {
+  const saved = window.localStorage.getItem(reportColumnWidthKey);
+  applyReportColumnWidth(saved || (reportColumnWidthControlEl ? reportColumnWidthControlEl.value : 54));
 }
 
 function getContrastLabel(mode, contrastKey) {
@@ -2525,6 +2551,15 @@ if (themeToggleBtn) {
   });
 }
 
+if (reportColumnWidthControlEl) {
+  const persistColumnWidth = () => {
+    const applied = applyReportColumnWidth(reportColumnWidthControlEl.value);
+    window.localStorage.setItem(reportColumnWidthKey, String(applied));
+  };
+  reportColumnWidthControlEl.addEventListener("input", persistColumnWidth);
+  reportColumnWidthControlEl.addEventListener("change", persistColumnWidth);
+}
+
 if (loginFormEl) {
   loginFormEl.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2607,6 +2642,7 @@ if (saveApiKeyBtn) {
 
 async function initApp() {
   initTheme();
+  initReportColumnWidth();
   setupSpeech();
   setMode("ct");
   loadAiPrefs();
