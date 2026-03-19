@@ -1,4 +1,5 @@
-﻿from flask import Flask, render_template, request, jsonify, send_file
+﻿from flask import Flask, render_template, request, jsonify, send_file, session, redirect
+from functools import wraps
 import io
 import json
 import os
@@ -13,9 +14,15 @@ import zipfile
 import unicodedata
 from datetime import date, datetime, timezone
 from html import escape
+from werkzeug.security import check_password_hash, generate_password_hash
 from xml.etree import ElementTree
 
 app = Flask(__name__)
+app.secret_key = (
+    os.getenv("APP_SECRET_KEY")
+    or os.getenv("SECRET_KEY")
+    or "radiologia-laudos-secret-change-me"
+)
 TEMPLATE_DB_PATH = os.getenv(
     "APP_DB_PATH",
     os.getenv("TEMPLATE_DB_PATH", os.path.join(app.root_path, "templates.db")),
@@ -33,6 +40,7 @@ ALLOWED_TEMPLATE_REGIONS = {
     "vascular",
 }
 API_KEY_PROVIDERS = {"openai", "gemini"}
+USER_ROLES = {"admin", "radiologist"}
 REPORT_CONTRAST_OPTIONS = {"sem", "com", "misto"}
 REPORT_LOGO_PATH = os.path.join(app.static_folder, "report_logo.png")
 REPORT_FOOTER_BAND_PATH = os.path.join(app.static_folder, "report_footer_band.png")
@@ -851,6 +859,323 @@ def _db_connect():
     return conn
 
 
+def _ensure_table_columns(conn, table_name, column_definitions):
+    existing = {
+        str(row["name"]).strip().lower()
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    for column_name, sql_definition in column_definitions.items():
+        if column_name.lower() in existing:
+            continue
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {sql_definition}")
+
+
+def _default_base_url_for_provider(provider):
+    clean_provider = _normalize_provider(provider)
+    if clean_provider == "lmstudio":
+        return "http://localhost:1234/v1"
+    if clean_provider == "gemini":
+        return "https://generativelanguage.googleapis.com/v1beta/openai"
+    return "https://api.openai.com/v1"
+
+
+def _normalize_username(value):
+    return str(value or "").strip().lower()
+
+
+def _normalize_user_role(value):
+    clean_role = str(value or "").strip().lower()
+    return clean_role if clean_role in USER_ROLES else ""
+
+
+def _normalize_crm(value):
+    return str(value or "").strip()
+
+
+def _normalize_subspecialty(value):
+    clean_value = str(value or "").strip()
+    return clean_value or "Radiologista"
+
+
+def _user_signature_role(user_like):
+    if not user_like:
+        return "Radiologista"
+    if isinstance(user_like, sqlite3.Row):
+        return _normalize_subspecialty(user_like["subspecialty"])
+    return _normalize_subspecialty(user_like.get("subspecialty"))
+
+
+def _user_row_to_json(row):
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "role": row["role"],
+        "fullName": row["full_name"],
+        "crm": row["crm"],
+        "subspecialty": _normalize_subspecialty(row["subspecialty"]),
+        "signatureRole": _user_signature_role(row),
+        "isActive": bool(row["is_active"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _get_setting_with_connection(conn, key, default=""):
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (str(key or "").strip(),)).fetchone()
+    if not row:
+        return default
+    return str(row["value"] or "").strip() or default
+
+
+def _set_setting_with_connection(conn, key, value):
+    now = _now_iso_utc()
+    conn.execute(
+        """
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        """,
+        (str(key or "").strip(), str(value or "").strip(), now),
+    )
+
+
+def _get_default_ai_settings_with_connection(conn):
+    provider = _normalize_provider(_get_setting_with_connection(conn, "default_ai_provider", "lmstudio")) or "lmstudio"
+    model = _get_setting_with_connection(conn, "default_ai_model", "")
+    base_url = _get_setting_with_connection(conn, "default_ai_base_url", _default_base_url_for_provider(provider))
+    if not base_url:
+        base_url = _default_base_url_for_provider(provider)
+    return {
+        "provider": provider,
+        "model": model,
+        "baseUrl": base_url,
+        "keyConfigured": bool(_get_global_api_key(provider)) if provider in API_KEY_PROVIDERS else True,
+    }
+
+
+def _get_default_ai_settings():
+    with _db_connect() as conn:
+        return _get_default_ai_settings_with_connection(conn)
+
+
+def _save_default_ai_settings(provider, model, base_url):
+    clean_provider = _normalize_provider(provider)
+    if clean_provider not in {"lmstudio", "openai", "gemini"}:
+        raise ValueError("Provedor padrão inválido.")
+
+    clean_model = str(model or "").strip()
+    if not clean_model:
+        raise ValueError("Modelo padrão é obrigatório.")
+
+    clean_base_url = str(base_url or "").strip() or _default_base_url_for_provider(clean_provider)
+    with _db_connect() as conn:
+        _set_setting_with_connection(conn, "default_ai_provider", clean_provider)
+        _set_setting_with_connection(conn, "default_ai_model", clean_model)
+        _set_setting_with_connection(conn, "default_ai_base_url", clean_base_url)
+        return _get_default_ai_settings_with_connection(conn)
+
+
+def _get_user_by_id_with_connection(conn, user_id):
+    clean_user_id = str(user_id or "").strip()
+    if not clean_user_id:
+        return None
+    return conn.execute(
+        "SELECT * FROM users WHERE id = ? AND is_active = 1",
+        (clean_user_id,),
+    ).fetchone()
+
+
+def _get_user_by_username_with_connection(conn, username):
+    clean_username = _normalize_username(username)
+    if not clean_username:
+        return None
+    return conn.execute(
+        "SELECT * FROM users WHERE username = ? AND is_active = 1",
+        (clean_username,),
+    ).fetchone()
+
+
+def _get_current_user():
+    user_id = str(session.get("user_id") or "").strip()
+    if not user_id:
+        return None
+    with _db_connect() as conn:
+        return _get_user_by_id_with_connection(conn, user_id)
+
+
+def _is_admin_user(user_row):
+    return bool(user_row and str(user_row["role"]).strip().lower() == "admin")
+
+
+def _override_signature_fields_for_user(fields, user_row):
+    clean_fields = dict(fields or {})
+    if not user_row or str(user_row["role"]).strip().lower() != "radiologist":
+        return clean_fields
+    clean_fields["radiologistName"] = str(user_row["full_name"] or "").strip()
+    clean_fields["radiologistCrm"] = str(user_row["crm"] or "").strip()
+    clean_fields["radiologistRole"] = _user_signature_role(user_row)
+    clean_fields["electronicSignature"] = True
+    return clean_fields
+
+
+def _current_user_payload(user_row):
+    if not user_row:
+        return None
+    payload = _user_row_to_json(user_row)
+    payload["displayName"] = payload["fullName"] or payload["username"]
+    payload["isAdmin"] = payload["role"] == "admin"
+    return payload
+
+
+def _session_payload(user_row=None):
+    user = user_row or _get_current_user()
+    if not user:
+        return {"authenticated": False}
+
+    with _db_connect() as conn:
+        ai_settings = _get_default_ai_settings_with_connection(conn)
+
+    return {
+        "authenticated": True,
+        "user": _current_user_payload(user),
+        "aiSettings": ai_settings,
+    }
+
+
+def _json_auth_required(role=None):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            user = _get_current_user()
+            if not user:
+                return jsonify({"error": "Sessão expirada. Faça login novamente."}), 401
+            if role and str(user["role"]).strip().lower() != role:
+                return jsonify({"error": "Acesso restrito."}), 403
+            return func(*args, current_user=user, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def _page_auth_required(role=None):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            user = _get_current_user()
+            if not user:
+                return redirect("/")
+            if role and str(user["role"]).strip().lower() != role:
+                return redirect("/")
+            return func(*args, current_user=user, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def _create_or_update_radiologist_user(conn, payload, existing_user=None):
+    if not isinstance(payload, dict):
+        raise ValueError("Payload inválido para usuário.")
+
+    username = _normalize_username(payload.get("username"))
+    full_name = str(payload.get("fullName", "")).strip()
+    crm = _normalize_crm(payload.get("crm"))
+    subspecialty = _normalize_subspecialty(payload.get("subspecialty"))
+    password = str(payload.get("password", "") or "")
+
+    if not username:
+        raise ValueError("Login é obrigatório.")
+    if not full_name:
+        raise ValueError("Nome completo é obrigatório.")
+    if not crm:
+        raise ValueError("CRM é obrigatório.")
+    if existing_user is None and not password.strip():
+        raise ValueError("Senha é obrigatória para novo usuário.")
+
+    conflict = conn.execute(
+        "SELECT id FROM users WHERE username = ? AND is_active = 1",
+        (username,),
+    ).fetchone()
+    if conflict and (existing_user is None or conflict["id"] != existing_user["id"]):
+        raise ValueError("Já existe um usuário ativo com este login.")
+
+    now = _now_iso_utc()
+    password_hash = existing_user["password_hash"] if existing_user else ""
+    if password.strip():
+        password_hash = generate_password_hash(password.strip())
+
+    user_id = existing_user["id"] if existing_user else str(uuid.uuid4())
+    created_at = existing_user["created_at"] if existing_user else now
+    conn.execute(
+        """
+        INSERT INTO users (
+            id,
+            username,
+            password_hash,
+            role,
+            full_name,
+            crm,
+            subspecialty,
+            is_active,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, 'radiologist', ?, ?, ?, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            username = excluded.username,
+            password_hash = excluded.password_hash,
+            full_name = excluded.full_name,
+            crm = excluded.crm,
+            subspecialty = excluded.subspecialty,
+            is_active = 1,
+            updated_at = excluded.updated_at
+        """,
+        (user_id, username, password_hash, full_name, crm, subspecialty, created_at, now),
+    )
+    return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone(), existing_user is None
+
+
+def _bootstrap_admin_user():
+    admin_username = _normalize_username(os.getenv("ADMIN_USERNAME", "admin"))
+    admin_password = str(os.getenv("ADMIN_PASSWORD", "admin123") or "").strip() or "admin123"
+    admin_full_name = str(os.getenv("ADMIN_FULL_NAME", "Administrador do Sistema") or "").strip()
+
+    with _db_connect() as conn:
+        existing_admin = conn.execute(
+            "SELECT id FROM users WHERE role = 'admin' AND is_active = 1 LIMIT 1"
+        ).fetchone()
+        if existing_admin:
+            return
+
+        now = _now_iso_utc()
+        conn.execute(
+            """
+            INSERT INTO users (
+                id,
+                username,
+                password_hash,
+                role,
+                full_name,
+                crm,
+                subspecialty,
+                is_active,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, 'admin', ?, '', 'Administrador', 1, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                admin_username,
+                generate_password_hash(admin_password),
+                admin_full_name,
+                now,
+                now,
+            ),
+        )
+
+
 def _init_templates_db():
     with _db_connect() as conn:
         conn.execute(
@@ -913,6 +1238,42 @@ def _init_templates_db():
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_reports_patient_id ON reports (patient_id)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                full_name TEXT NOT NULL,
+                crm TEXT NOT NULL DEFAULT '',
+                subspecialty TEXT NOT NULL DEFAULT 'Radiologista',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_role_active ON users (role, is_active)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        _ensure_table_columns(
+            conn,
+            "reports",
+            {
+                "created_by_user_id": "created_by_user_id TEXT NOT NULL DEFAULT ''",
+                "updated_by_user_id": "updated_by_user_id TEXT NOT NULL DEFAULT ''",
+            },
         )
 
 
@@ -1170,7 +1531,7 @@ def _compose_report_text(mode, region, contrast, fields):
     return "\n".join(lines).strip()
 
 
-def _clean_report_payload(payload):
+def _clean_report_payload(payload, current_user=None):
     if not isinstance(payload, dict):
         raise ValueError("Payload inválido para laudo.")
 
@@ -1207,6 +1568,7 @@ def _clean_report_payload(payload):
         "findings": _coerce_payload_text(fields.get("findings")),
         "impression": _coerce_payload_text(fields.get("impression")),
     }
+    clean_fields = _override_signature_fields_for_user(clean_fields, current_user)
     derived_age = _calculate_age_text(clean_fields["patientBirthDate"], clean_fields["studyDate"])
     clean_fields["patientAge"] = derived_age or clean_fields["patientAge"]
     final_text = _coerce_payload_text(payload.get("finalText"))
@@ -1282,12 +1644,22 @@ def _report_row_to_json(row):
     }
 
 
-def _upsert_report_with_connection(conn, payload):
-    item = _clean_report_payload(payload)
+def _upsert_report_with_connection(conn, payload, current_user=None):
+    item = _clean_report_payload(payload, current_user=current_user)
     now = _now_iso_utc()
     report_id = item["id"] or str(uuid.uuid4())
     existing = conn.execute("SELECT id, created_at FROM reports WHERE id = ?", (report_id,)).fetchone()
     created_at = existing["created_at"] if existing else now
+    current_user_id = str(current_user["id"]).strip() if current_user else ""
+    existing_author = conn.execute(
+        "SELECT created_by_user_id FROM reports WHERE id = ?",
+        (report_id,),
+    ).fetchone()
+    created_by_user_id = (
+        str(existing_author["created_by_user_id"] or "").strip()
+        if existing_author and str(existing_author["created_by_user_id"] or "").strip()
+        else current_user_id
+    )
 
     conn.execute(
         """
@@ -1310,9 +1682,11 @@ def _upsert_report_with_connection(conn, payload):
             impression,
             final_text,
             payload_json,
+            created_by_user_id,
+            updated_by_user_id,
             created_at,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             mode = excluded.mode,
             region = excluded.region,
@@ -1331,6 +1705,7 @@ def _upsert_report_with_connection(conn, payload):
             impression = excluded.impression,
             final_text = excluded.final_text,
             payload_json = excluded.payload_json,
+            updated_by_user_id = excluded.updated_by_user_id,
             updated_at = excluded.updated_at
         """,
         (
@@ -1352,6 +1727,8 @@ def _upsert_report_with_connection(conn, payload):
             item["fields"]["impression"],
             item["final_text"],
             item["payload_json"],
+            created_by_user_id,
+            current_user_id,
             created_at,
             now,
         ),
@@ -1847,10 +2224,138 @@ def _upsert_template_with_connection(conn, payload):
 
 
 _init_templates_db()
+_bootstrap_admin_user()
+
+
+@app.route("/session", methods=["GET"])
+def session_info():
+    return jsonify(_session_payload())
+
+
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json(silent=True) or {}
+    username = _normalize_username(data.get("username"))
+    password = str(data.get("password", "") or "")
+    if not username or not password:
+        return jsonify({"error": "Informe login e senha."}), 400
+
+    with _db_connect() as conn:
+        user = _get_user_by_username_with_connection(conn, username)
+
+    if not user or not check_password_hash(user["password_hash"], password):
+        return jsonify({"error": "Login ou senha inválidos."}), 401
+
+    session.clear()
+    session["user_id"] = user["id"]
+    return jsonify(_session_payload(user))
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/users/manage", methods=["GET"])
+@_page_auth_required("admin")
+def manage_users_page(current_user):
+    return render_template("admin_users.html", session_data=_session_payload(current_user))
+
+
+@app.route("/admin/users", methods=["GET"])
+@_json_auth_required("admin")
+def list_admin_users(current_user):
+    try:
+        with _db_connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM users
+                WHERE role = 'radiologist' AND is_active = 1
+                ORDER BY full_name COLLATE NOCASE ASC
+                """
+            ).fetchall()
+        return jsonify({"users": [_user_row_to_json(row) for row in rows]})
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao listar usuários: {exc}"}), 500
+
+
+@app.route("/admin/users", methods=["POST"])
+@_json_auth_required("admin")
+def create_admin_user(current_user):
+    data = request.get_json(silent=True) or {}
+    try:
+        with _db_connect() as conn:
+            user, created = _create_or_update_radiologist_user(conn, data)
+        return jsonify({"user": _user_row_to_json(user), "created": created})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao salvar usuário: {exc}"}), 500
+
+
+@app.route("/admin/users/<user_id>", methods=["PUT"])
+@_json_auth_required("admin")
+def update_admin_user(user_id, current_user):
+    data = request.get_json(silent=True) or {}
+    try:
+        with _db_connect() as conn:
+            existing_user = _get_user_by_id_with_connection(conn, user_id)
+            if not existing_user or str(existing_user["role"]).strip().lower() != "radiologist":
+                return jsonify({"error": "Usuário não encontrado."}), 404
+            user, _created = _create_or_update_radiologist_user(conn, data, existing_user=existing_user)
+        return jsonify({"user": _user_row_to_json(user), "created": False})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao atualizar usuário: {exc}"}), 500
+
+
+@app.route("/admin/users/<user_id>", methods=["DELETE"])
+@_json_auth_required("admin")
+def delete_admin_user(user_id, current_user):
+    try:
+        with _db_connect() as conn:
+            existing_user = _get_user_by_id_with_connection(conn, user_id)
+            if not existing_user or str(existing_user["role"]).strip().lower() != "radiologist":
+                return jsonify({"error": "Usuário não encontrado."}), 404
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return jsonify({"ok": True})
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao remover usuário: {exc}"}), 500
+
+
+@app.route("/admin/ai-settings", methods=["GET"])
+@_json_auth_required("admin")
+def get_admin_ai_settings(current_user):
+    try:
+        with _db_connect() as conn:
+            settings = _get_default_ai_settings_with_connection(conn)
+        return jsonify({"settings": settings, "status": _global_api_key_status()})
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao carregar configurações de IA: {exc}"}), 500
+
+
+@app.route("/admin/ai-settings", methods=["POST"])
+@_json_auth_required("admin")
+def save_admin_ai_settings(current_user):
+    data = request.get_json(silent=True) or {}
+    try:
+        settings = _save_default_ai_settings(
+            provider=data.get("provider"),
+            model=data.get("model"),
+            base_url=data.get("baseUrl"),
+        )
+        return jsonify({"ok": True, "settings": settings, "status": _global_api_key_status()})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"error": f"Erro ao salvar configurações de IA: {exc}"}), 500
 
 
 @app.route("/extract-template-text", methods=["POST"])
-def extract_template_text():
+@_json_auth_required()
+def extract_template_text(current_user):
     uploaded = request.files.get("file")
     if not uploaded or not uploaded.filename:
         return jsonify({"error": "Arquivo não enviado."}), 400
@@ -1879,7 +2384,8 @@ def extract_template_text():
 
 
 @app.route("/templates", methods=["GET"])
-def list_templates():
+@_json_auth_required()
+def list_templates(current_user):
     try:
         with _db_connect() as conn:
             rows = conn.execute(
@@ -1897,7 +2403,8 @@ def list_templates():
 
 
 @app.route("/templates", methods=["POST"])
-def save_template():
+@_json_auth_required()
+def save_template(current_user):
     data = request.get_json(silent=True) or {}
     try:
         with _db_connect() as conn:
@@ -1910,7 +2417,8 @@ def save_template():
 
 
 @app.route("/templates/bulk", methods=["POST"])
-def save_templates_bulk():
+@_json_auth_required()
+def save_templates_bulk(current_user):
     data = request.get_json(silent=True) or {}
     items = data.get("templates")
     if not isinstance(items, list):
@@ -1955,7 +2463,8 @@ def save_templates_bulk():
 
 
 @app.route("/reports", methods=["GET"])
-def list_reports():
+@_json_auth_required()
+def list_reports(current_user):
     try:
         raw_limit = request.args.get("limit", "20")
         try:
@@ -1965,25 +2474,37 @@ def list_reports():
         limit = max(1, min(limit, 100))
 
         with _db_connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM reports
-                ORDER BY updated_at DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            if _is_admin_user(current_user):
+                rows = conn.execute(
+                    """
+                    SELECT * FROM reports
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM reports
+                    WHERE created_by_user_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (current_user["id"], limit),
+                ).fetchall()
         return jsonify({"reports": [_report_row_to_json(row) for row in rows]})
     except sqlite3.Error as exc:
         return jsonify({"error": f"Erro ao listar laudos: {exc}"}), 500
 
 
 @app.route("/reports", methods=["POST"])
-def save_report():
+@_json_auth_required()
+def save_report(current_user):
     data = request.get_json(silent=True) or {}
     try:
         with _db_connect() as conn:
-            report, created = _upsert_report_with_connection(conn, data)
+            report, created = _upsert_report_with_connection(conn, data, current_user=current_user)
         return jsonify({"report": report, "created": created})
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -1992,11 +2513,22 @@ def save_report():
 
 
 @app.route("/reports/export-pdf", methods=["POST"])
-def export_report_pdf():
+@_json_auth_required()
+def export_report_pdf(current_user):
     data = request.get_json(silent=True) or {}
     try:
-        pdf_buffer = _build_report_pdf_bytes(data)
-        filename = _report_filename(data)
+        sanitized_payload = _clean_report_payload(data, current_user=current_user)
+        pdf_payload = {
+            "id": sanitized_payload["id"],
+            "mode": sanitized_payload["mode"],
+            "region": sanitized_payload["region"],
+            "contrast": sanitized_payload["contrast"],
+            "status": sanitized_payload["status"],
+            "fields": sanitized_payload["fields"],
+            "finalText": sanitized_payload["final_text"],
+        }
+        pdf_buffer = _build_report_pdf_bytes(pdf_payload)
+        filename = _report_filename(pdf_payload)
         return send_file(
             pdf_buffer,
             mimetype="application/pdf",
@@ -2012,7 +2544,8 @@ def export_report_pdf():
 
 
 @app.route("/api-keys", methods=["POST"])
-def save_global_api_key():
+@_json_auth_required("admin")
+def save_global_api_key(current_user):
     data = request.get_json(silent=True) or {}
     provider = _normalize_provider(data.get("provider"))
     api_key = str(data.get("apiKey", "")).strip()
@@ -2032,7 +2565,8 @@ def save_global_api_key():
 
 
 @app.route("/api-keys/status", methods=["GET"])
-def global_api_key_status():
+@_json_auth_required("admin")
+def global_api_key_status(current_user):
     try:
         return jsonify(_global_api_key_status())
     except sqlite3.Error as exc:
@@ -2040,13 +2574,21 @@ def global_api_key_status():
 
 
 @app.route("/generate", methods=["POST"])
-def generate_report():
+@_json_auth_required()
+def generate_report(current_user):
     try:
         data = request.get_json(silent=True) or {}
-        provider = data.get("provider", "openai")
-        model = data.get("model", "").strip()
-        base_url = data.get("baseUrl", "").strip()
-        api_key = _resolve_api_key(provider, data.get("apiKey", ""))
+        saved_ai_settings = _get_default_ai_settings()
+        if _is_admin_user(current_user):
+            provider = _normalize_provider(data.get("provider") or saved_ai_settings["provider"])
+            model = str(data.get("model", "") or saved_ai_settings["model"]).strip()
+            base_url = str(data.get("baseUrl", "") or saved_ai_settings["baseUrl"]).strip()
+            api_key = _resolve_api_key(provider, data.get("apiKey", ""))
+        else:
+            provider = saved_ai_settings["provider"]
+            model = saved_ai_settings["model"]
+            base_url = saved_ai_settings["baseUrl"]
+            api_key = _get_global_api_key(provider) if provider in API_KEY_PROVIDERS else ""
         payload = data.get("payload", {}) or {}
 
         if not model:
@@ -2268,12 +2810,22 @@ def generate_report():
 
 
 @app.route("/models", methods=["POST"])
-def list_models():
+@_json_auth_required()
+def list_models(current_user):
     data = request.get_json(silent=True) or {}
-    provider = data.get("provider", "openai")
-    base_url = data.get("baseUrl", "").strip()
-    api_key = _resolve_api_key(provider, data.get("apiKey", ""))
-    loaded_only = bool(data.get("loadedOnly"))
+    saved_ai_settings = _get_default_ai_settings()
+    if _is_admin_user(current_user):
+        provider = _normalize_provider(data.get("provider") or saved_ai_settings["provider"])
+        base_url = str(data.get("baseUrl", "") or saved_ai_settings["baseUrl"]).strip()
+        api_key = _resolve_api_key(provider, data.get("apiKey", ""))
+        loaded_only = bool(data.get("loadedOnly"))
+    else:
+        provider = saved_ai_settings["provider"]
+        base_url = saved_ai_settings["baseUrl"]
+        model = str(saved_ai_settings["model"] or "").strip()
+        if not model:
+            return jsonify({"models": [], "warning": "O administrador ainda não definiu o modelo padrão."})
+        return jsonify({"models": [model]})
 
     if provider in ("openai", "gemini") and not api_key:
         return jsonify({
