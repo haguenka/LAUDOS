@@ -163,9 +163,11 @@ if (userFormEl) {
     event.preventDefault();
 
     const userId = managedUserIdEl.value.trim();
+    const normalizedUsername = managedUserUsernameEl.value.trim().toLowerCase();
+    managedUserUsernameEl.value = normalizedUsername;
     const payload = {
       fullName: managedUserFullNameEl.value.trim(),
-      username: managedUserUsernameEl.value.trim(),
+      username: normalizedUsername,
       password: managedUserPasswordEl.value,
       crm: managedUserCrmEl.value.trim(),
       subspecialty: managedUserSubspecialtyEl.value.trim() || "Radiologista",
@@ -178,7 +180,7 @@ if (userFormEl) {
     try {
       await saveManagedUser(payload, userId);
       resetUserForm();
-      userFormStatusEl.textContent = "Usuário salvo com sucesso.";
+      userFormStatusEl.textContent = `Usuário salvo com sucesso. Login liberado: ${normalizedUsername}.`;
       await loadManagedUsers();
     } catch (err) {
       userFormStatusEl.textContent = err.message || "Falha ao salvar o usuário.";

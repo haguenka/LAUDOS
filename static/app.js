@@ -184,6 +184,7 @@ const sessionDisplayMetaEl = document.getElementById("sessionDisplayMeta");
 const manageUsersBtn = document.getElementById("manageUsersBtn");
 const saveAiSettingsBtn = document.getElementById("saveAiSettings");
 const aiLockHintEl = document.getElementById("aiLockHint");
+const aiPinnedNoticeEl = document.getElementById("aiPinnedNotice");
 const aiAdminControlsEl = document.getElementById("aiAdminControls");
 const signatureSectionEl = document.getElementById("signatureSection");
 const clearFieldButtons = document.querySelectorAll(".clear-field-btn");
@@ -521,6 +522,10 @@ function updateAiLockHint() {
   const modelLabel = settings.model ? `Modelo: ${settings.model}` : "Modelo padrão ainda não definido";
   if (isAdminUser()) {
     aiLockHintEl.textContent = `Esta configuração é o padrão global para todos os radiologistas. ${providerLabel}. ${modelLabel}.`;
+    if (aiPinnedNoticeEl) {
+      aiPinnedNoticeEl.textContent =
+        "A IA confirmada aqui permanece ativa para todos os usuários, mesmo após logout do administrador, até nova alteração.";
+    }
     return;
   }
   aiLockHintEl.textContent = `Usando a IA padrão definida pelo administrador. ${providerLabel}. ${modelLabel}.`;
@@ -610,6 +615,22 @@ async function refreshSessionState() {
   }
   showLoginScreen();
   return sessionData;
+}
+
+async function fetchPinnedAiSettingsForAdmin() {
+  if (!isAdminUser()) return null;
+  const response = await fetch("/admin/ai-settings", { method: "GET" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Falha ao carregar a IA padrão confirmada.");
+  }
+  if (data.settings) {
+    applyAiSettings(data.settings);
+  }
+  if (data.status) {
+    updateGlobalKeyStatusLabel(data.status, data.settings && data.settings.provider);
+  }
+  return data;
 }
 
 async function submitLogin(username, password) {
@@ -1347,7 +1368,7 @@ async function saveDefaultAiSettings() {
   } finally {
     if (saveAiSettingsBtn) {
       saveAiSettingsBtn.disabled = false;
-      saveAiSettingsBtn.textContent = "Salvar padrão";
+      saveAiSettingsBtn.textContent = "Confirmar IA padrão";
     }
   }
 }
@@ -2293,6 +2314,14 @@ function bindAgeRecalculation(inputEl) {
 }
 
 async function initializeAuthenticatedData() {
+  if (isAdminUser()) {
+    try {
+      await fetchPinnedAiSettingsForAdmin();
+    } catch (err) {
+      setAiStatus("Falha ao carregar IA padrão", "warn");
+    }
+  }
+
   try {
     await loadCustomTemplates();
   } catch (err) {
