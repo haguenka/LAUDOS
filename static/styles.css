@@ -588,6 +588,37 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.saved-report-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.saved-report-item {
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: var(--surface-muted);
+  border: 1px solid var(--outline-weak);
+}
+
+.saved-report-item h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.saved-report-meta {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.saved-report-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
 .footer {
   padding: 0 24px 40px;
   max-width: 1200px;

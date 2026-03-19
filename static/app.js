@@ -6,6 +6,8 @@
   baseText: "",
   finalText: "",
   pendingStart: null,
+  savedReports: [],
+  currentReportId: "",
 };
 
 const themeKey = "radiologiaTheme";
@@ -127,6 +129,7 @@ const contrastSelect = document.getElementById("contrastSelect");
 const specificTemplateSelect = document.getElementById("specificTemplateSelect");
 const applyTemplateBtn = document.getElementById("applyTemplate");
 const addTemplateBtn = document.getElementById("addTemplate");
+const importTemplateBtn = document.getElementById("importTemplate");
 const templateFileInput = document.getElementById("templateFileInput");
 const templateStatusEl = document.getElementById("templateStatus");
 const aiProviderEl = document.getElementById("aiProvider");
@@ -143,10 +146,15 @@ const generateReportBtn = document.getElementById("generateReport");
 const clearFormBtn = document.getElementById("clearForm");
 const copyReportBtn = document.getElementById("copyReport");
 const downloadReportBtn = document.getElementById("downloadReport");
+const downloadPdfBtn = document.getElementById("downloadPdf");
+const saveFinalReportBtn = document.getElementById("saveFinalReport");
 const saveDraftBtn = document.getElementById("saveDraft");
 const loadDraftBtn = document.getElementById("loadDraft");
 const stopDictationBtn = document.getElementById("stopDictation");
 const reportOutputEl = document.getElementById("reportOutput");
+const savedReportsListEl = document.getElementById("savedReportsList");
+const savedReportsStatusEl = document.getElementById("savedReportsStatus");
+const refreshSavedReportsBtn = document.getElementById("refreshSavedReports");
 const micStatusEl = document.getElementById("micStatus");
 const speechSupportEl = document.getElementById("speechSupport");
 const speechHintEl = document.getElementById("speechHint");
@@ -618,6 +626,52 @@ function extractTemplateSections(text) {
     return sections;
   }
   return { technique: "", findings: content, impression: "" };
+}
+
+function buildTemplateTextFromForm() {
+  const technique = valueOf("technique");
+  const findings = valueOf("findings");
+  const impression = valueOf("impression");
+  const parts = [];
+
+  if (technique) {
+    parts.push("TÉCNICA:");
+    parts.push(technique);
+    parts.push("");
+  }
+  if (findings) {
+    parts.push("LAUDO:");
+    parts.push(formatFindingsText(findings));
+    parts.push("");
+  }
+  if (impression) {
+    parts.push("IMPRESSÃO:");
+    parts.push(impression);
+  }
+
+  return parts.join("\n").trim();
+}
+
+function createTemplateFromCurrentReport() {
+  const content = buildTemplateTextFromForm();
+  if (!content) {
+    window.alert("Preencha técnica, laudo ou impressão antes de criar um template.");
+    return;
+  }
+
+  const region = regionSelect ? regionSelect.value : "cranio";
+  const modeLabel = state.mode === "ct" ? "TC" : "RM";
+  const regionLabel = regionLabels[region] || region;
+
+  openTemplateModal({
+    filename: `${modeLabel} ${regionLabel} - template`,
+    mode: state.mode,
+    region,
+    text: content,
+  });
+  if (templateSourceLabelEl) {
+    templateSourceLabelEl.textContent = "Template criado a partir do laudo digitado. Revise os campos antes de salvar.";
+  }
 }
 
 function isTemplateModalOpen() {
@@ -1366,6 +1420,221 @@ function ensureReport() {
   return report;
 }
 
+function collectReportPayload(existingId = "") {
+  return {
+    id: existingId || state.currentReportId || "",
+    mode: state.mode,
+    region: regionSelect.value,
+    contrast: contrastSelect.value,
+    status: "finalized",
+    finalText: ensureReport(),
+    fields: {
+      patientName: valueOf("patientName"),
+      patientId: valueOf("patientId"),
+      patientAge: valueOf("patientAge"),
+      patientSex: valueOf("patientSex"),
+      studyDate: valueOf("studyDate"),
+      referrer: valueOf("referrer"),
+      indication: valueOf("indication"),
+      extraInfo: valueOf("extraInfo"),
+      aiRequest: aiRequestEl ? aiRequestEl.value.trim() : "",
+      technique: valueOf("technique"),
+      findings: valueOf("findings"),
+      impression: valueOf("impression"),
+    },
+  };
+}
+
+async function fetchSavedReports() {
+  const response = await fetch("/reports?limit=20", { method: "GET" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Falha ao carregar laudos salvos.");
+  }
+  return Array.isArray(data.reports) ? data.reports : [];
+}
+
+async function saveFinalReportOnServer(payload) {
+  const response = await fetch("/reports", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data && data.error) || "Falha ao salvar laudo finalizado.");
+  }
+  return data.report || null;
+}
+
+function updateSavedReportsStatus(message) {
+  if (savedReportsStatusEl) {
+    savedReportsStatusEl.textContent = message;
+  }
+}
+
+function formatSavedReportMeta(report) {
+  const parts = [];
+  if (report && report.regionLabel) parts.push(report.regionLabel);
+  if (report && report.contrastLabel) parts.push(report.contrastLabel);
+  const studyDate =
+    report && report.fields && typeof report.fields.studyDate === "string"
+      ? report.fields.studyDate.trim()
+      : "";
+  if (studyDate) parts.push(studyDate);
+  return parts.join(" | ");
+}
+
+function populateFormFromSavedReport(report) {
+  if (!report || !report.fields) return;
+
+  state.currentReportId = report.id || "";
+  setMode(report.mode || "ct");
+  regionSelect.value = report.region || "cranio";
+  contrastSelect.value = report.contrast || "sem";
+  refreshSpecificTemplateOptions();
+
+  const fields = report.fields || {};
+  Object.keys(fields).forEach((key) => {
+    const el = document.getElementById(key);
+    if (el) el.value = fields[key] || "";
+  });
+
+  ensureReport();
+}
+
+function renderSavedReports() {
+  if (!savedReportsListEl) return;
+  savedReportsListEl.innerHTML = "";
+
+  if (!state.savedReports.length) {
+    updateSavedReportsStatus("Nenhum laudo finalizado salvo ainda.");
+    return;
+  }
+
+  updateSavedReportsStatus(`${state.savedReports.length} laudo(s) finalizado(s) carregado(s) do banco.`);
+
+  state.savedReports.forEach((report) => {
+    const card = document.createElement("article");
+    card.className = "saved-report-item";
+
+    const title = document.createElement("h3");
+    const patientName =
+      report && report.fields && typeof report.fields.patientName === "string"
+        ? report.fields.patientName.trim()
+        : "";
+    title.textContent = patientName || `${report.mode === "mri" ? "RM" : "TC"} ${report.regionLabel || ""}`.trim();
+
+    const meta = document.createElement("p");
+    meta.className = "saved-report-meta";
+    meta.textContent = formatSavedReportMeta(report) || "Laudo salvo sem metadados adicionais.";
+
+    const updated = document.createElement("p");
+    updated.className = "saved-report-meta";
+    updated.textContent = `Atualizado em: ${new Date(report.updatedAt).toLocaleString("pt-BR")}`;
+
+    const actions = document.createElement("div");
+    actions.className = "saved-report-actions";
+
+    const loadBtn = document.createElement("button");
+    loadBtn.type = "button";
+    loadBtn.className = "btn ghost btn-small";
+    loadBtn.textContent = "Carregar";
+    loadBtn.addEventListener("click", () => {
+      populateFormFromSavedReport(report);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+
+    const pdfBtn = document.createElement("button");
+    pdfBtn.type = "button";
+    pdfBtn.className = "btn btn-small";
+    pdfBtn.textContent = "PDF";
+    pdfBtn.addEventListener("click", () => {
+      downloadReportPdf(report).catch((err) => {
+        window.alert(err.message || "Não foi possível exportar o PDF do laudo salvo.");
+      });
+    });
+
+    actions.appendChild(loadBtn);
+    actions.appendChild(pdfBtn);
+    card.appendChild(title);
+    card.appendChild(meta);
+    card.appendChild(updated);
+    card.appendChild(actions);
+    savedReportsListEl.appendChild(card);
+  });
+}
+
+async function loadSavedReports() {
+  try {
+    state.savedReports = await fetchSavedReports();
+    renderSavedReports();
+  } catch (err) {
+    state.savedReports = [];
+    renderSavedReports();
+    updateSavedReportsStatus(err.message || "Falha ao carregar laudos salvos.");
+  }
+}
+
+async function saveFinalReport() {
+  const payload = collectReportPayload();
+  if (!payload.finalText.trim()) {
+    window.alert("Gere o laudo antes de salvar.");
+    return;
+  }
+
+  if (saveFinalReportBtn) {
+    saveFinalReportBtn.disabled = true;
+    saveFinalReportBtn.textContent = "Salvando...";
+  }
+
+  try {
+    const report = await saveFinalReportOnServer(payload);
+    state.currentReportId = report && report.id ? report.id : state.currentReportId;
+    window.alert("Laudo finalizado salvo no banco.");
+    await loadSavedReports();
+    if (report) {
+      const sameIndex = state.savedReports.findIndex((item) => item.id === report.id);
+      if (sameIndex >= 0) {
+        state.savedReports[sameIndex] = report;
+        renderSavedReports();
+      }
+    }
+  } catch (err) {
+    window.alert(err.message || "Não foi possível salvar o laudo.");
+  } finally {
+    if (saveFinalReportBtn) {
+      saveFinalReportBtn.disabled = false;
+      saveFinalReportBtn.textContent = "Salvar finalizado";
+    }
+  }
+}
+
+async function downloadReportPdf(payload = null) {
+  const reportPayload = payload || collectReportPayload();
+  const response = await fetch("/reports/export-pdf", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(reportPayload),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data && data.error) || "Falha ao gerar PDF.");
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const disposition = response.headers.get("content-disposition") || "";
+  const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+  const filename = filenameMatch && filenameMatch[1] ? filenameMatch[1] : "laudo_radiologia.pdf";
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function clearForm() {
   const inputs = document.querySelectorAll("input, textarea");
   inputs.forEach((input) => {
@@ -1373,6 +1642,7 @@ function clearForm() {
   });
   document.getElementById("patientSex").value = "";
   reportOutputEl.textContent = "Seu laudo aparecerá aqui.";
+  state.currentReportId = "";
 }
 
 function saveDraft() {
@@ -1408,6 +1678,7 @@ function loadDraft() {
   }
 
   const data = JSON.parse(raw);
+  state.currentReportId = "";
   setMode(data.mode || "ct");
   regionSelect.value = data.region || "cranio";
   contrastSelect.value = data.contrast || "sem";
@@ -1633,6 +1904,12 @@ applyTemplateBtn.addEventListener("click", applyTemplate);
 
 if (addTemplateBtn && templateFileInput) {
   addTemplateBtn.addEventListener("click", () => {
+    createTemplateFromCurrentReport();
+  });
+}
+
+if (importTemplateBtn && templateFileInput) {
+  importTemplateBtn.addEventListener("click", () => {
     templateFileInput.click();
   });
 
@@ -1704,9 +1981,27 @@ downloadReportBtn.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
+if (downloadPdfBtn) {
+  downloadPdfBtn.addEventListener("click", async () => {
+    try {
+      await downloadReportPdf();
+    } catch (err) {
+      window.alert(err.message || "Não foi possível gerar o PDF.");
+    }
+  });
+}
+
+if (saveFinalReportBtn) {
+  saveFinalReportBtn.addEventListener("click", saveFinalReport);
+}
+
 saveDraftBtn.addEventListener("click", saveDraft);
 loadDraftBtn.addEventListener("click", loadDraft);
 stopDictationBtn.addEventListener("click", stopDictation);
+
+if (refreshSavedReportsBtn) {
+  refreshSavedReportsBtn.addEventListener("click", loadSavedReports);
+}
 
 if (themeToggleBtn) {
   themeToggleBtn.addEventListener("click", () => {
@@ -1746,6 +2041,7 @@ loadCustomTemplates().catch(() => {
   updateTemplateStatus(customTemplateList, "Falha ao sincronizar templates com servidor.");
   refreshSpecificTemplateOptions();
 });
+loadSavedReports();
 loadAiPrefs();
 updateAiDefaults();
 fetchGlobalApiKeyStatus();
