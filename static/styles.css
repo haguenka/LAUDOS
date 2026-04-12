@@ -213,15 +213,40 @@ body::after {
   color: var(--muted);
 }
 
+.ownerline {
+  margin: 0 0 8px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--muted-strong);
+}
+
 h1 {
   font-family: "Fraunces", "Georgia", serif;
   font-size: clamp(24px, 4vw, 36px);
   margin: 0 0 6px;
 }
 
+.title-jp {
+  margin: -2px 0 10px;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  letter-spacing: 0.08em;
+  color: var(--accent-2);
+  font-weight: 700;
+}
+
 .subtitle {
   margin: 0;
   color: var(--muted);
+}
+
+.jp-line {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.88em;
+  line-height: 1.45;
+  letter-spacing: 0.05em;
+  color: var(--muted-strong);
 }
 
 .status-card {
@@ -629,8 +654,14 @@ textarea:focus {
 }
 
 .clear-field-btn {
-  margin-top: 10px;
   align-self: flex-start;
+}
+
+.field-action-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }
 
 .grid {
